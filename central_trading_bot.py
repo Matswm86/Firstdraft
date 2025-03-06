@@ -1,7 +1,6 @@
 import logging
 import time
-
-# Placeholder imports (implement these classes separately)
+from ninja_trader_api import NinjaTraderAPI  # New import for NinjaTraderAPI
 from data_ingestion import DataIngestion
 from signal_generator import SignalGenerator
 from risk_management import RiskManagement
@@ -20,11 +19,17 @@ class CentralTradingBot:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
+        # Initialize NinjaTraderAPI for live trading only
+        if self.mode == 'live':
+            self.ninja_trader_api = NinjaTraderAPI(config['ninja_trader_api'])
+        else:
+            self.ninja_trader_api = None  # Not needed for backtesting
+
         # Initialize modules
-        self.data_ingestion = DataIngestion(config['data_ingestion'])
+        self.data_ingestion = DataIngestion(config['data_ingestion'], self.ninja_trader_api if self.mode == 'live' else None)
         self.signal_generator = SignalGenerator(config['signal_generation'])
         self.risk_management = RiskManagement(config['risk_management'])
-        self.trade_execution = TradeExecution(config['trade_execution'])
+        self.trade_execution = TradeExecution(config['trade_execution'], self.ninja_trader_api if self.mode == 'live' else None)
         self.notification = Notification(config['notification'])
         self.api_server = APIServer(config['api_server'])
         self.trade_logger = TradeLogger(config['trade_logger'])
@@ -42,7 +47,7 @@ class CentralTradingBot:
 
         self.signal_generator.load_historical_data(historical_data)
         for tf in self.signal_generator.trading_timeframes:
-            self.signal_generator.generate_signal_for_tf()
+            self.signal_generator.generate_signal_for_tf(tf)  # Updated to accept timeframe
             self.trade_execution.execute_backtest_trades()
             self.trade_logger.log_trades()
 
@@ -62,6 +67,12 @@ class CentralTradingBot:
                 tick = self.data_ingestion.fetch_live_data()
                 if tick:
                     self.signal_generator.process_tick(tick)
+                    if self.signal_generator.last_signal:  # Assuming last_signal is set by process_tick
+                        adjusted_signal = self.risk_management.evaluate_signal(self.signal_generator.last_signal)
+                        if adjusted_signal:
+                            trade_result = self.trade_execution.execute_trade(adjusted_signal)
+                            if trade_result:
+                                self.risk_management.on_trade_closed(trade_result)
                 time.sleep(1)
         except Exception as e:
             self.logger.error(f"Live trading failed: {str(e)}")
@@ -102,7 +113,8 @@ if __name__ == "__main__":
         "trade_execution": {},
         "notification": {},
         "api_server": {},
-        "trade_logger": {}
+        "trade_logger": {},
+        "ninja_trader_api": {}  # Add NinjaTraderAPI config if needed
     }
     bot = CentralTradingBot(config)
     if bot.mode == "backtest":
