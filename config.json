@@ -1,0 +1,108 @@
+{
+  "data_ingestion": {
+    "historical_data_path": "C:\\Users\\matsw\\PycharmProjects\\Firstdraft\\data",
+    "timeframe_files": {
+      "1d": "backtrader_1d.csv",
+      "4h": "backtrader_4h.csv",
+      "1h": "backtrader_1h.csv",
+      "30m": "backtrader_30m.csv",
+      "15m": "backtrader_15m.csv",
+      "5m": "backtrader_5m.csv"
+    },
+    "start_date": "2008-12-15",
+    "end_date": "2025-02-10",
+    "delimiter": ",",
+    "column_names": ["datetime", "Open", "High", "Low", "Close", "Volume"],
+    "complete_days_only": true
+  },
+  "signal_generation": {
+    "strategy": "alpha_architect",
+    "confluence_weights": {
+      "hurst_exponent": 3,
+      "adaptive_moving_average": 2,
+      "bos": 2,
+      "choch": 1,
+      "cumulative_delta": 3,
+      "bid_ask_imbalance": 2,
+      "composite_breadth": 2,
+      "tick_filter": 1,
+      "price_near_vwap": 2,
+      "zscore_deviation": 2,
+      "vwap_slope": 1,
+      "proximity_liquidity": 2,
+      "reversal_patterns": 1
+    },
+    "thresholds": {
+      "15min": 12,
+      "5min": 12,
+      "1min": 16
+    },
+    "timeframes": ["15min", "5min", "1min"],
+    "trend_timeframes": ["1d", "4h", "1h", "30m"]
+   },
+        "max_bars": {
+            "1min": 20160,
+            "5min": 4032,
+            "15min": 1344,
+            "30min": 672,
+            "1h": 336,
+            "4h": 84,
+            "daily": 14
+  },
+  "machine_learning": {
+    "model_type": "random_forest",
+    "n_estimators": 100,
+    "max_depth": 10,
+    "training_data_split": 0.8
+  },
+  "backtesting": {
+    "start_date": "2008-12-15",
+    "end_date": "2025-02-10",
+    "commission": 0.01,
+    "slippage": 0.0005
+  },
+    "live_trading": {
+    "order_size_limit": 100,
+    "api_timeout": 10,
+    "api_retry_attempts": 3,
+    "api_retry_delay": 5
+  },
+  "risk_management": {
+    "max_drawdown": 0.065,
+    "max_daily_loss": 0.02,
+    "risk_per_trade": 0.01,
+    "max_trades_per_day": 5,
+    "order_size_limit": 100
+  },
+  "trade_execution": {
+    "platform": "NinjaTrader",
+    "api_key": "ENV:NINJATRADER_API_KEY",
+    "api_secret": "ENV:NINJATRADER_API_SECRET",
+    "order_type": "market",
+    "api_timeout": 10,
+    "api_retry_attempts": 3,
+    "api_retry_delay": 5
+  },
+  "notification": {
+    "email": "matswwm86@yahoo.no",
+    "smtp_server": "smtp.example.com",
+    "smtp_port": 587,
+    "smtp_user": "ENV:SMTP_USER",
+    "smtp_password": "ENV:SMTP_PASSWORD"
+  },
+  "api_server": {
+    "port": 8080,
+    "host": "127.0.0.1",
+    "api_key": "ENV:API_SERVER_KEY"
+  },
+  "trade_logger": {
+    "log_file": "logs/trading_bot.log",
+    "log_level": "INFO",
+    "real_time_log_level": "DEBUG"
+  },
+  "central_trading_bot": {
+    "mode": "backtest",
+    "timezone": "UTC",
+    "base_currency": "USD"
+  }
+}
