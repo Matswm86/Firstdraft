@@ -1,7 +1,6 @@
 import json
 import os
 import logging
-import pandas as pd
 from central_trading_bot import CentralTradingBot
 
 

@@ -1,23 +1,23 @@
 import pandas as pd
 from collections import deque
 from datetime import datetime, timedelta
-import numpy as np
 from hurst import compute_Hc
 import ta  # Technical Analysis library for indicator calculations
 
-
 class SignalGenerator:
-    def __init__(self, config):
+    def __init__(self, config, trade_execution=None):
         """
         Initialize the SignalGenerator with configuration parameters.
 
         Args:
             config (dict): Configuration including timeframes, thresholds, and max bars.
+            trade_execution (object, optional): Instance of TradeExecution for signal handling.
         """
         self.trading_timeframes = config['trading_timeframes']  # e.g., ['1min', '5min']
         self.thresholds = config['thresholds']  # e.g., {'1min': 10, '5min': 8}
         self.timeframes = config['timeframes']  # e.g., ['1min', '5min', '15min', '1h', '4h', 'daily']
         self.max_bars = config['max_bars']  # e.g., {'1min': 10000, '5min': 5000, ..., 'daily': 16}
+        self.trade_execution = trade_execution  # Optional for signal handling
 
         # History storage: deque of bar dictionaries
         self.histories = {tf: deque(maxlen=self.max_bars[tf]) for tf in self.timeframes}
@@ -48,16 +48,42 @@ class SignalGenerator:
             'daily': timedelta(days=1)
         }
 
-    def process_tick(self, tick):
+    def preprocess_tick(self, raw_tick):
+        """
+        Convert raw tick data from NinjaTraderAPI to the expected format.
+
+        Args:
+            raw_tick (dict): Raw tick data from NinjaTraderAPI.
+
+        Returns:
+            dict: Preprocessed tick data.
+        """
+        return {
+            'timestamp': raw_tick['time'],
+            'price': raw_tick['last_price'],
+            'volume': raw_tick.get('size', 0),
+            'bid': raw_tick.get('bid', raw_tick['last_price']),
+            'ask': raw_tick.get('ask', raw_tick['last_price'])
+        }
+
+    def process_tick(self, raw_tick):
         """
         Process an incoming tick, aggregate into bars, and generate signals if applicable.
 
         Args:
-            tick (dict): Tick data with 'timestamp', 'price', 'volume', 'bid', 'ask', etc.
+            raw_tick (dict): Raw tick data from NinjaTraderAPI.
         """
-        tick_time = pd.to_datetime(tick['timestamp'])
-        price = tick['price']
-        volume = tick.get('volume', 0)
+        try:
+            tick = self.preprocess_tick(raw_tick)
+            tick_time = pd.to_datetime(tick['timestamp'])
+            price = tick['price']
+            volume = tick.get('volume', 0)
+        except KeyError as e:
+            print(f"Invalid tick data: missing {e}")
+            return
+        except Exception as e:
+            print(f"Error processing tick: {e}")
+            return
 
         # Update real-time metrics
         self.update_real_time_data(tick)
@@ -294,7 +320,7 @@ class SignalGenerator:
 
     def load_historical_data(self, historical_data):
         """
-        Load historical bar data into the histories for backtesting.
+        Load historical bar data into the histories for backtesting or warm-up.
 
         Args:
             historical_data (dict): Dictionary of DataFrames keyed by timeframe.
@@ -309,11 +335,24 @@ class SignalGenerator:
                     df = self.calculate_indicators(df, tf)
                     self.indicator_histories[tf] = df
 
+    def start_live_trading(self, historical_data):
+        """
+        Start live trading with a warm-up period using historical data.
+
+        Args:
+            historical_data (dict): Historical data to initialize the system.
+        """
+        self.load_historical_data(historical_data)
+        print("SignalGenerator initialized with historical data, ready for live ticks.")
+
     def send_signal(self, signal):
         """
-        Send the generated signal (placeholder for actual implementation).
+        Send the generated signal to the trading system.
 
         Args:
             signal (dict): Signal data with action, timeframe, score, and timestamp.
         """
-        print(f"Signal Generated: {signal}")  # Replace with actual signal sending logic
+        if self.trade_execution:
+            self.trade_execution.execute_signal(signal)
+        else:
+            print("Signal generated but no TradeExecution instance found:", signal)

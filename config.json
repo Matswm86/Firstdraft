@@ -39,15 +39,15 @@
     },
     "timeframes": ["15min", "5min", "1min"],
     "trend_timeframes": ["1d", "4h", "1h", "30m"]
-   },
-        "max_bars": {
-            "1min": 20160,
-            "5min": 4032,
-            "15min": 1344,
-            "30min": 672,
-            "1h": 336,
-            "4h": 84,
-            "daily": 14
+  },
+  "max_bars": {
+    "1min": 20160,
+    "5min": 4032,
+    "15min": 1344,
+    "30min": 672,
+    "1h": 336,
+    "4h": 84,
+    "daily": 14
   },
   "machine_learning": {
     "model_type": "random_forest",
@@ -61,11 +61,15 @@
     "commission": 0.01,
     "slippage": 0.0005
   },
-    "live_trading": {
+  "live_trading": {
     "order_size_limit": 100,
     "api_timeout": 10,
     "api_retry_attempts": 3,
-    "api_retry_delay": 5
+    "api_retry_delay": 5,
+    "subscriptions": [
+      {"action": "subscribe", "symbol": "NQ", "type": "tick"},
+      {"action": "subscribe", "symbol": "NQ", "type": "orderbook"}
+    ]
   },
   "risk_management": {
     "max_drawdown": 0.065,
@@ -74,10 +78,12 @@
     "max_trades_per_day": 5,
     "order_size_limit": 100
   },
-  "trade_execution": {
+  "ninja_trader_api": {
     "platform": "NinjaTrader",
     "api_key": "ENV:NINJATRADER_API_KEY",
     "api_secret": "ENV:NINJATRADER_API_SECRET",
+    "ws_url": "wss://ninjatrader-ws-url",
+    "rest_url": "https://ninjatrader-rest-url",
     "order_type": "market",
     "api_timeout": 10,
     "api_retry_attempts": 3,

@@ -1,13 +1,13 @@
 import logging
 import time
-from ninja_trader_api import NinjaTraderAPI  # New import for NinjaTraderAPI
-from data_ingestion import DataIngestion
-from signal_generator import SignalGenerator
-from risk_management import RiskManagement
-from trade_execution import TradeExecution
-from notification import Notification
-from api_server import APIServer
-from trade_logger import TradeLogger
+from NinjaTraderAPI import NinjaTraderAPI
+from DataIngestion import DataIngestion
+from SignalGenerator import SignalGenerator
+from RiskManagement import RiskManagement
+from TradeExecution import TradeExecution
+from Notification import Notification
+from APIServer import APIServer
+from TradeLogger import TradeLogger
 
 class CentralTradingBot:
     def __init__(self, config):
@@ -31,7 +31,7 @@ class CentralTradingBot:
         self.risk_management = RiskManagement(config['risk_management'])
         self.trade_execution = TradeExecution(config['trade_execution'], self.ninja_trader_api if self.mode == 'live' else None)
         self.notification = Notification(config['notification'])
-        self.api_server = APIServer(config['api_server'])
+        self.api_server = APIServer(config['api_server'], self)
         self.trade_logger = TradeLogger(config['trade_logger'])
 
     def start_backtest(self):
