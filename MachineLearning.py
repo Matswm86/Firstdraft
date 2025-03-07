@@ -3,30 +3,45 @@ from sklearn.ensemble import RandomForestClassifier  # Example model
 from sklearn.model_selection import train_test_split
 import pandas as pd
 import numpy as np
-import ta  # Technical analysis library for feature engineering (ensure it's installed)
+import ta  # Technical analysis library for feature engineering
 
 class MachineLearning:
     def __init__(self, config):
-        """Initialize the MachineLearning module with a configuration."""
+        """
+        Initialize the MachineLearning module with a configuration.
+
+        Args:
+            config (dict): Configuration dictionary with model settings.
+        """
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
         self.models = {}  # Dictionary to hold multiple models
         self.trained = False  # Flag to indicate if models are trained
 
+        # Load models during initialization
+        self.load_models()
+
     def load_models(self):
-        """Load and initialize machine learning models based on configuration."""
+        """
+        Load and initialize machine learning models based on configuration.
+        """
         model_configs = self.config.get('models', [])
+        if not model_configs:
+            self.logger.warning("No models specified in config; ML functionality disabled")
+            return
+
         for model_config in model_configs:
             model_type = model_config.get('type')
             if model_type == 'random_forest':
                 self.models['random_forest'] = RandomForestClassifier(
                     n_estimators=model_config.get('n_estimators', 100),
-                    max_depth=model_config.get('max_depth', 10)
+                    max_depth=model_config.get('max_depth', 10),
+                    random_state=42  # For reproducibility
                 )
-                self.logger.info(f"Initialized {model_type} model")
-            # Add other model types here in the future (e.g., 'gradient_boosting', 'neural_network')
+                self.logger.info(f"Initialized {model_type} model with n_estimators={model_config.get('n_estimators', 100)}, max_depth={model_config.get('max_depth', 10)}")
+            # Placeholder for future model types (e.g., 'gradient_boosting', 'neural_network')
             else:
-                self.logger.warning(f"Model type {model_type} not yet supported")
+                self.logger.warning(f"Model type '{model_type}' not yet supported")
 
     def train_models(self, X_train, y_train):
         """
@@ -39,11 +54,16 @@ class MachineLearning:
         if not self.models:
             self.logger.error("No models loaded to train")
             return
-        for name, model in self.models.items():
-            self.logger.info(f"Training {name} model...")
-            model.fit(X_train, y_train)
-            self.logger.info(f"{name} model trained successfully")
-        self.trained = True
+
+        try:
+            for name, model in self.models.items():
+                self.logger.info(f"Training {name} model...")
+                model.fit(X_train, y_train)
+                self.logger.info(f"{name} model trained successfully")
+            self.trained = True
+        except Exception as e:
+            self.logger.error(f"Failed to train models: {str(e)}")
+            self.trained = False
 
     def predict(self, X):
         """
@@ -53,21 +73,32 @@ class MachineLearning:
             X (pd.DataFrame): Feature data for prediction.
 
         Returns:
-            np.array: Combined predictions, or None if models aren't trained.
+            np.array: Combined predictions, or None if models aren't trained or prediction fails.
         """
         if not self.trained:
             self.logger.error("Models are not trained yet")
             return None
 
-        predictions = {}
-        for name, model in self.models.items():
-            predictions[name] = model.predict(X)
+        if X.empty:
+            self.logger.error("No feature data provided for prediction")
+            return None
 
-        # Simple majority voting for binary classification
-        # Adjust this for regression or multi-class scenarios later
-        combined_predictions = np.array([max(set(pred), key=pred.count)
-                                       for pred in zip(*predictions.values())])
-        return combined_predictions
+        try:
+            predictions = {}
+            for name, model in self.models.items():
+                predictions[name] = model.predict(X)
+
+            # Simple majority voting for binary classification
+            if len(self.models) > 1:
+                combined_predictions = np.array([max(set(pred), key=pred.count)
+                                               for pred in zip(*predictions.values())])
+            else:
+                combined_predictions = list(predictions.values())[0]
+            self.logger.debug(f"Generated predictions for {len(X)} data points")
+            return combined_predictions
+        except Exception as e:
+            self.logger.error(f"Prediction failed: {str(e)}")
+            return None
 
     def enhance_signals(self, signals, data):
         """
@@ -85,24 +116,35 @@ class MachineLearning:
             self.logger.warning("Models not trained; returning original signals")
             return signals
 
+        if not signals or data.empty:
+            self.logger.warning("No signals or data provided; returning original signals")
+            return signals
+
         # Generate features from market data
         features = self.generate_features(data)
 
-        # Ensure feature DataFrame aligns with signals length
-        if len(features) != len(signals):
-            self.logger.error("Feature data length does not match signals length")
+        # Align features with signals (assuming signals correspond to the latest data points)
+        if len(features) < len(signals):
+            self.logger.error(f"Feature data length ({len(features)}) less than signals length ({len(signals)})")
             return signals
+        elif len(features) > len(signals):
+            # Trim features to match signals (assuming signals are the latest entries)
+            features = features.tail(len(signals))
 
         # Predict using the ensemble
         predictions = self.predict(features)
-
         if predictions is None:
             self.logger.error("Prediction failed; returning original signals")
             return signals
 
-        # Filter signals: keep only those where prediction is positive (e.g., 1)
-        # This assumes binary classification; adjust as needed
-        enhanced_signals = [signal for signal, pred in zip(signals, predictions) if pred == 1]
+        # Enhance signals: filter based on positive predictions (1 for buy/sell confirmation)
+        enhanced_signals = []
+        for signal, pred in zip(signals, predictions):
+            if pred == 1:  # Assuming 1 indicates a valid trade
+                enhanced_signals.append(signal)
+            else:
+                self.logger.debug(f"Signal filtered out by ML prediction: {signal}")
+
         self.logger.info(f"Enhanced signals: kept {len(enhanced_signals)} out of {len(signals)}")
         return enhanced_signals
 
@@ -114,19 +156,25 @@ class MachineLearning:
             data (pd.DataFrame): Market data with columns like 'Close'.
 
         Returns:
-            pd.DataFrame: Feature set for model prediction.
+            pd.DataFrame: Feature set for model prediction, or empty DataFrame on failure.
         """
+        if data.empty:
+            self.logger.error("No market data provided for feature generation")
+            return pd.DataFrame()
+
         features = data.copy()
         try:
-            # Example features: moving average and RSI
+            # Example features: moving average, RSI, and volatility
             features['ma_50'] = data['Close'].rolling(window=50, min_periods=1).mean()
             features['rsi'] = ta.momentum.RSIIndicator(data['Close'], window=14).rsi()
-            # Drop NaN values that might arise from indicators
+            features['volatility'] = data['Close'].rolling(window=20, min_periods=1).std()
+            # Drop NaN values from indicators
             features = features.dropna()
+            self.logger.debug(f"Generated features with shape: {features.shape}")
             return features
         except Exception as e:
             self.logger.error(f"Feature generation failed: {str(e)}")
-            return data  # Return original data as fallback
+            return pd.DataFrame()
 
     def train_test_split_data(self, data, target, test_size=0.2):
         """
@@ -138,22 +186,36 @@ class MachineLearning:
             test_size (float): Proportion of data for testing.
 
         Returns:
-            tuple: X_train, X_test, y_train, y_test
+            tuple: (X_train, X_test, y_train, y_test) or None if splitting fails.
         """
-        return train_test_split(data, target, test_size=test_size, random_state=42)
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(data, target,
+                                                              test_size=test_size,
+                                                              random_state=42)
+            self.logger.info(f"Data split: {len(X_train)} train, {len(X_test)} test samples")
+            return X_train, X_test, y_train, y_test
+        except Exception as e:
+            self.logger.error(f"Train-test split failed: {str(e)}")
+            return None
 
 # Example usage (commented out for reference)
-# if __name__ == "__main__":
-#     logging.basicConfig(level=logging.INFO)
-#     config = {
-#         "models": [
-#             {"type": "random_forest", "n_estimators": 100, "max_depth": 10}
-#         ]
-#     }
-#     ml = MachineLearning(config)
-#     ml.load_models()
-#     # Example data and signals
-#     data = pd.DataFrame({'Close': np.random.rand(100)})
-#     signals = [1] * 100  # Dummy signals
-#     # ml.train_models(X_train, y_train)  # Requires prepared X_train, y_train
-#     # enhanced = ml.enhance_signals(signals, data)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    config = {
+        "models": [
+            {"type": "random_forest", "n_estimators": 100, "max_depth": 10}
+        ]
+    }
+    ml = MachineLearning(config)
+    # Example data and signals
+    data = pd.DataFrame({'Close': np.random.rand(100)})
+    signals = [{"action": "buy", "entry_price": p} for p in data['Close']]
+    # Dummy target for training (e.g., 1 for buy, 0 for no action)
+    target = pd.Series(np.random.randint(0, 2, size=100))
+    features = ml.generate_features(data)
+    split = ml.train_test_split_data(features, target)
+    if split:
+        X_train, X_test, y_train, y_test = split
+        ml.train_models(X_train, y_train)
+        enhanced = ml.enhance_signals(signals, features)
+        print(f"Enhanced signals: {len(enhanced)}")

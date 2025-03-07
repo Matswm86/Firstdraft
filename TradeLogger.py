@@ -1,6 +1,7 @@
 import logging
 import csv
 from datetime import datetime
+import os
 
 
 class TradeLogger:
@@ -27,6 +28,9 @@ class TradeLogger:
         Set up CSV file for detailed trade logging if not already present.
         """
         try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(self.log_file) or '.', exist_ok=True)
+
             # Check if file exists; if not, create it with headers
             write_headers = not self.log_file_exists()
             with open(self.log_file, 'a', newline='') as f:
@@ -41,12 +45,11 @@ class TradeLogger:
 
     def log_file_exists(self):
         """
-        Check if the trade log file already exists.
+        Check if the trade log file already exists and is non-empty.
 
         Returns:
-            bool: True if file exists, False otherwise.
+            bool: True if file exists and has content, False otherwise.
         """
-        import os
         return os.path.exists(self.log_file) and os.path.getsize(self.log_file) > 0
 
     def log_trade(self, trade):
@@ -62,11 +65,11 @@ class TradeLogger:
                 'timestamp': datetime.utcnow().isoformat(),
                 'symbol': trade.get('symbol', 'Unknown'),
                 'action': trade.get('action', 'Unknown'),
-                'entry_price': trade.get('entry_price', 0.0),
-                'position_size': trade.get('position_size', 0),
-                'stop_loss': trade.get('stop_loss', 0.0),
-                'take_profit': trade.get('take_profit', 0.0),
-                'profit_loss': trade.get('profit_loss', 0.0)
+                'entry_price': float(trade.get('entry_price', 0.0)),
+                'position_size': int(trade.get('position_size', 0)),
+                'stop_loss': float(trade.get('stop_loss', 0.0)),
+                'take_profit': float(trade.get('take_profit', 0.0)),
+                'profit_loss': float(trade.get('profit_loss', 0.0))
             }
 
             # Log to console/file logger
@@ -79,7 +82,8 @@ class TradeLogger:
             with open(self.log_file, 'a', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=trade_data.keys())
                 writer.writerow(trade_data)
-
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"Invalid trade data format: {str(e)} - Trade: {trade}")
         except Exception as e:
             self.logger.error(f"Failed to log trade: {str(e)}")
 
@@ -91,10 +95,10 @@ class TradeLogger:
             signals (list): List of trade/signal dictionaries to log.
         """
         if not signals:
-            self.logger.info("No trades to log.")
+            self.logger.info("No trades to log")
             return
 
-        self.logger.info(f"Logging {len(signals)} trades.")
+        self.logger.info(f"Logging {len(signals)} trades")
         for signal in signals:
             self.log_trade(signal)
 
@@ -103,7 +107,7 @@ class TradeLogger:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     config = {
-        "trade_log_file": "trades.csv",
+        "trade_log_file": "logs/trades.csv",
         "log_level": "INFO",
         "real_time_log_level": "DEBUG"
     }

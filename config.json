@@ -38,22 +38,21 @@
       "1min": 16
     },
     "timeframes": ["15min", "5min", "1min"],
-    "trend_timeframes": ["1d", "4h", "1h", "30m"]
-  },
-  "max_bars": {
-    "1min": 20160,
-    "5min": 4032,
-    "15min": 1344,
-    "30min": 672,
-    "1h": 336,
-    "4h": 84,
-    "daily": 14
+    "trend_timeframes": ["1d", "4h", "1h", "30m"],
+    "max_bars": {
+      "1min": 20160,
+      "5min": 4032,
+      "15min": 1344,
+      "30min": 672,
+      "1h": 336,
+      "4h": 84,
+      "daily": 14
+    }
   },
   "machine_learning": {
-    "model_type": "random_forest",
-    "n_estimators": 100,
-    "max_depth": 10,
-    "training_data_split": 0.8
+    "models": [
+      {"type": "random_forest", "n_estimators": 100, "max_depth": 10}
+    ]
   },
   "backtesting": {
     "start_date": "2008-12-15",
@@ -74,9 +73,12 @@
   "risk_management": {
     "max_drawdown": 0.065,
     "max_daily_loss": 0.02,
+    "max_profit_per_day": 0.04,
     "risk_per_trade": 0.01,
     "max_trades_per_day": 5,
-    "order_size_limit": 100
+    "order_size_limit": 100,
+    "contract_multiplier": 20,
+    "initial_balance": 100000
   },
   "ninja_trader_api": {
     "platform": "NinjaTrader",
@@ -90,6 +92,7 @@
     "api_retry_delay": 5
   },
   "notification": {
+    "email_enabled": true,
     "email": "matswwm86@yahoo.no",
     "smtp_server": "smtp.example.com",
     "smtp_port": 587,
@@ -102,7 +105,7 @@
     "api_key": "ENV:API_SERVER_KEY"
   },
   "trade_logger": {
-    "log_file": "logs/trading_bot.log",
+    "trade_log_file": "logs/trades.csv",
     "log_level": "INFO",
     "real_time_log_level": "DEBUG"
   },

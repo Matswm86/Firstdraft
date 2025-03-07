@@ -9,7 +9,7 @@ class DataIngestion:
 
         Args:
             config (dict): Configuration for data ingestion.
-            ninja_trader_api (object, optional): Instance of NinjaTraderAPI for live data.
+            ninja_trader_api (NinjaTraderAPI, optional): Instance for live data in live mode.
         """
         self.data_dir = config.get('historical_data_path', '.')
         self.timeframes = config.get('timeframe_files', {})
@@ -49,8 +49,11 @@ class DataIngestion:
             subscriptions (list): List of subscription requests (e.g., symbols and data types).
         """
         if self.ninja_trader_api:
-            self.ninja_trader_api.start_websocket(subscriptions)
-            self.logger.info("Started WebSocket connection for live data.")
+            try:
+                self.ninja_trader_api.start_websocket(subscriptions)
+                self.logger.info("Started WebSocket connection for live data.")
+            except Exception as e:
+                self.logger.error(f"Failed to start WebSocket: {str(e)}")
         else:
             self.logger.error("NinjaTraderAPI not provided; cannot start WebSocket.")
 
@@ -59,24 +62,27 @@ class DataIngestion:
         Fetch live market data from NinjaTraderAPI.
 
         Returns:
-            DataFrame or None: Live data in DataFrame format, or None if not available.
+            dict or None: Latest tick data as a dictionary, or None if not available.
         """
         if self.ninja_trader_api:
-            live_data = self.ninja_trader_api.get_live_data()
-            if live_data:
-                # Assuming live_data is a dict or list that can be converted to a DataFrame
-                df = pd.DataFrame([live_data], columns=self.column_names)
-                df.set_index('datetime', inplace=True)
-                self.logger.info("Fetched live data successfully.")
-                return df
-            else:
-                self.logger.info("No new live data available yet.")
+            try:
+                live_data = self.ninja_trader_api.get_live_data()
+                if live_data:
+                    self.logger.debug(f"Fetched live tick: {live_data}")
+                    # Return raw tick dictionary as expected by SignalGenerator
+                    return live_data
+                else:
+                    self.logger.debug("No new live data available yet.")
+                    return None
+            except Exception as e:
+                self.logger.error(f"Failed to fetch live data: {str(e)}")
                 return None
         else:
             self.logger.info("NinjaTraderAPI not provided; cannot fetch live data.")
             return None
 
-if __name__ == '__main__':
+# Example usage (for testing, commented out)
+if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     config = {
         "historical_data_path": r"C:\Users\matsw\PycharmProjects\Firstdraft\data",

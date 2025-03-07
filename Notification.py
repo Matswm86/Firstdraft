@@ -3,7 +3,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-
 class Notification:
     def __init__(self, config):
         """
@@ -35,12 +34,15 @@ class Notification:
         details_str = f" - Details: {details}" if details else ""
         self.logger.info(f"Notification: {message}{details_str}")
 
-        # Send email if enabled and configured
-        if self.email_enabled and self.email and self.smtp_server:
+        # Send email if enabled and fully configured
+        if (self.email_enabled and self.email and self.smtp_server and
+            self.smtp_port and self.smtp_user and self.smtp_password):
             try:
                 self._send_email(message, details)
             except Exception as e:
                 self.logger.error(f"Failed to send email notification: {str(e)}")
+        elif self.email_enabled:
+            self.logger.warning("Email notification enabled but incomplete configuration provided")
 
     def _send_email(self, message, details=None):
         """
@@ -69,7 +71,6 @@ class Notification:
             server.login(self.smtp_user, self.smtp_password)
             server.send_message(msg)
             self.logger.info("Email notification sent successfully")
-
 
 # Example usage (for testing purposes, commented out)
 if __name__ == "__main__":
