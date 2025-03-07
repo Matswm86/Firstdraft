@@ -44,7 +44,7 @@ class RiskManagement:
 
     def update_account_balance(self):
         """
-        Fetch real-time account balance from TradeExecution in live mode.
+        Fetch real-time account balance and P&L from TradeExecution via CrossTrade REST API.
 
         Returns:
             bool: True if balance updated successfully, False otherwise.
@@ -54,12 +54,14 @@ class RiskManagement:
                 account_info = self.trade_execution.get_account_status()
                 if account_info:
                     self.account_balance = account_info.get('balance', self.account_balance)
-                    self.logger.debug(f"Account balance updated to {self.account_balance}")
+                    self.daily_profit = account_info.get('daily_profit', self.daily_profit)  # From CrossTrade REST
+                    self.daily_loss = account_info.get('daily_loss', self.daily_loss)        # From CrossTrade REST
+                    self.logger.info(f"Account updated: balance={self.account_balance}, "
+                                   f"profit={self.daily_profit}, loss={self.daily_loss}")
                     return True
             except Exception as e:
-                self.logger.error(f"Failed to update account balance: {e}")
-        else:
-            self.logger.debug("No TradeExecution instance; using static balance for backtest")
+                self.logger.error(f"Failed to update account balance: {str(e)}")
+        self.logger.debug("No TradeExecution instance; using static balance for backtest")
         return False
 
     def calculate_position_size(self, signal):
@@ -116,7 +118,7 @@ class RiskManagement:
             return False
 
         # Check drawdown (simplified as cumulative loss from initial balance)
-        if (self.account_balance - self.daily_loss) < (1 - self.max_drawdown) * config.get('initial_balance', 100000):
+        if (self.account_balance - self.daily_loss) < (1 - self.max_drawdown) * self.config.get('initial_balance', 100000):
             self.logger.warning("Maximum drawdown exceeded")
             return False
 

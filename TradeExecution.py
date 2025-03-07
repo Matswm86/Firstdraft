@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 class TradeExecution:
     def __init__(self, config, ninja_trader_api):
@@ -6,22 +7,22 @@ class TradeExecution:
         Initialize TradeExecution with configuration and NinjaTraderAPI instance.
 
         Args:
-            config (dict): Configuration dictionary containing 'order_type' and other settings.
+            config (dict): Configuration dictionary with 'order_type' and other settings.
             ninja_trader_api (NinjaTraderAPI, optional): Instance for live API interactions.
         """
-        self.order_type = config.get('order_type', 'market')  # Default to 'market' if not specified
+        self.order_type = config.get('order_type', 'market')  # Default to 'market'
         self.ninja_trader_api = ninja_trader_api  # None in backtest mode
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def execute_trade(self, signal):
         """
-        Send trade order to NinjaTrader via NinjaTraderAPI in live mode.
+        Send trade order to NinjaTrader via CrossTrade REST API in live mode.
 
         Args:
             signal (dict): Trading signal with 'action', 'position_size', 'stop_loss', 'take_profit', etc.
 
         Returns:
-            dict or None: Response from NinjaTraderAPI if successful, None if failed.
+            dict or None: Trade result if successful, None if failed.
         """
         if self.ninja_trader_api is None:
             self.logger.error("Cannot execute trade: NinjaTraderAPI not initialized (backtest mode)")
@@ -37,19 +38,30 @@ class TradeExecution:
         }
         try:
             response = self.ninja_trader_api.place_order(order)
-            self.logger.info(f"Trade executed successfully: {signal['action']} {signal['position_size']} NQ")
-            return response  # Contains order details, e.g., order ID
+            if response and 'order_id' in response:  # Adjust based on CrossTrade REST response
+                trade_result = {
+                    "symbol": order["symbol"],
+                    "action": order["action"],
+                    "position_size": order["quantity"],
+                    "entry_price": signal["entry_price"],
+                    "profit_loss": response.get("profit_loss", 0.0),  # May not be immediate
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "order_id": response["order_id"]
+                }
+                self.logger.info(f"Trade executed successfully: {trade_result}")
+                return trade_result
+            self.logger.error(f"Trade failed: Invalid response {response}")
+            return None
         except Exception as e:
-            self.logger.error(f"Trade execution failed: {e}")
+            self.logger.error(f"Trade execution failed: {str(e)}")
             return None
 
     def get_account_status(self):
         """
-        Fetch account status from NinjaTrader via NinjaTraderAPI in live mode.
+        Fetch account status from NinjaTrader via CrossTrade REST API in live mode.
 
         Returns:
-            dict or None: Account status with 'balance', 'daily_profit', 'daily_loss', 'open_positions',
-                          or None if the request fails or in backtest mode.
+            dict or None: Account status or None if failed or in backtest mode.
         """
         if self.ninja_trader_api is None:
             self.logger.debug("Account status not available in backtest mode")
@@ -57,21 +69,24 @@ class TradeExecution:
 
         try:
             account_status = self.ninja_trader_api.get_account_status()
-            self.logger.debug(f"Account status retrieved: {account_status}")
-            return account_status
+            if account_status:
+                self.logger.debug(f"Account status retrieved: {account_status}")
+                return account_status
+            self.logger.error("Failed to retrieve account status: Empty response")
+            return None
         except Exception as e:
-            self.logger.error(f"Failed to get account status: {e}")
+            self.logger.error(f"Failed to get account status: {str(e)}")
             return None
 
     def close_position(self, position_id):
         """
-        Close a specific position via NinjaTraderAPI in live mode.
+        Close a specific position via CrossTrade REST API in live mode.
 
         Args:
             position_id (str): Identifier of the position to close.
 
         Returns:
-            dict or None: Response from NinjaTraderAPI if successful, None if failed or in backtest mode.
+            dict or None: Response if successful, None if failed or in backtest mode.
         """
         if self.ninja_trader_api is None:
             self.logger.error(f"Cannot close position {position_id}: NinjaTraderAPI not initialized (backtest mode)")
@@ -79,10 +94,13 @@ class TradeExecution:
 
         try:
             response = self.ninja_trader_api.close_position(position_id)
-            self.logger.info(f"Position {position_id} closed successfully")
-            return response  # May contain P&L information
+            if response:
+                self.logger.info(f"Position {position_id} closed successfully: {response}")
+                return response
+            self.logger.error(f"Failed to close position {position_id}: Empty response")
+            return None
         except Exception as e:
-            self.logger.error(f"Failed to close position {position_id}: {e}")
+            self.logger.error(f"Failed to close position {position_id}: {str(e)}")
             return None
 
     def execute_backtest_trades(self):
@@ -96,7 +114,7 @@ class TradeExecution:
             self.logger.error("execute_backtest_trades called in live mode; use execute_trade instead")
             return []
 
-        # Assuming SignalGenerator provides last_signal
+        # Assuming SignalGenerator provides last_signal via reference (e.g., CentralTradingBot)
         if not hasattr(self, 'signal_generator') or not self.signal_generator.last_signal:
             self.logger.debug("No signal available for backtest trade execution")
             return []
@@ -110,14 +128,15 @@ class TradeExecution:
             "stop_loss": signal['stop_loss'],
             "take_profit": signal['take_profit'],
             "profit_loss": self._simulate_trade_outcome(signal),
-            "timestamp": signal['timestamp']
+            "timestamp": signal['timestamp'],
+            "order_id": f"sim-{datetime.utcnow().timestamp()}"  # Simulated ID
         }
         self.logger.info(f"Simulated backtest trade: {trade_result}")
         return [trade_result]
 
     def _simulate_trade_outcome(self, signal):
         """
-        Simulate the trade outcome for backtesting.
+        Simulate trade outcome for backtesting.
 
         Args:
             signal (dict): Trading signal with entry_price, stop_loss, take_profit.
@@ -130,26 +149,18 @@ class TradeExecution:
         take_profit = signal['take_profit']
         position_size = signal['position_size']
 
-        # Simplified simulation: assume trade hits take_profit or stop_loss randomly
         import random
         outcome = take_profit if random.choice([True, False]) else stop_loss
         profit_loss = (outcome - entry_price) * position_size if signal['action'] == 'buy' else (entry_price - outcome) * position_size
         return profit_loss
 
-# Example usage (for testing, commented out)
+# Example usage (for testing)
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    config = {
-        "order_type": "market"
-    }
-    from NinjaTraderAPI import NinjaTraderAPI
-    ninja_api = NinjaTraderAPI({"api_key": "test_key", "api_secret": "test_secret"})
+    config = {"order_type": "market"}
+    from NinjaTraderAPI import NinjaTraderAPI  # Assumes updated hybrid version
+    ninja_api = NinjaTraderAPI({"ws_url": "ws://127.0.0.1:8088", "rest_url": "http://127.0.0.1:8080/api", "api_key": "test_key"})
     te = TradeExecution(config, ninja_api)
-    signal = {
-        "action": "buy",
-        "position_size": 2,
-        "stop_loss": 14950,
-        "take_profit": 15100
-    }
+    signal = {"action": "buy", "position_size": 2, "stop_loss": 14950, "take_profit": 15100, "entry_price": 15000}
     result = te.execute_trade(signal)
     print(result)
