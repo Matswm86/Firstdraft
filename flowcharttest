@@ -1,85 +1,41 @@
-FLOW CHART
+[config.json]
+   ↓
+[main.py]
+   ├── Load Config → load_config()
+   ├── Setup Logging → setup_logging()
+   ├── Initialize Bot → CentralTradingBot(config)
+   └── Branch by Mode
+       ├── "live" → start_live_trading()
+       └── "backtest" → start_backtest()
 
-+-------------------------+
-|        config.json      |
-| (Configuration Source)  |
-+-------------------------+
-          |
-          v
-+-------------------------+
-|        main.py          |
-| (Entry Point)           |
-+-------------------------+
-| Load Config             |
-| - Parse config.json     |
-| - Substitute ENV vars   |
-| Setup Logging           |
-|                         |
-| +--> Initialize Bot     |
-|      - Pass Config      |
-|                         |
-| +--> Start Bot          |
-|      - Mode Check       |
-+-------------------------+
-          |
-          v
-+-------------------------+
-|   CentralTradingBot     |
-| (Main Coordinator)      |
-+-------------------------+
-| Distribute Config       |
-| - NinjaTraderAPI        |
-| - DataIngestion         |
-| - SignalGenerator       |
-| - RiskManagement        |
-| - TradeExecution        |
-| - APIServer             |
-| - TradeLogger           |
-| - Notification          |
-| - Backtesting           |
-| - MachineLearning       |
-|                         |
-| +--> Mode Check:        |
-|      +----------------+ |
-|      |                | |
-+------|----------------|--+
-       |                |
-       v                v
-+----------------+  +----------------+
-| Live Trading   |  | Backtesting    |
-| Flow           |  | Flow           |
-+----------------+  +----------------+
-|                |  |                |
-| +--> DataIngest|  | +--> Backtesting
-| |    - WebSocket  |    - Load Data |
-| |    - Fetch Live |                |
-| |              |  | +--> SignalGen |
-| +--> SignalGen |  |    - Load Data |
-| |    - Process |  |    - Generate  |
-| |    - Generate|  |                |
-| |              |  | +--> RiskMgt   |
-| +--> RiskMgt   |  |    - Evaluate  |
-| |    - Evaluate|  |                |
-| |              |  |    - Simulate  |
-| +--> TradeExec |  |                |
-| |    - Execute |  | +--> TradeLog  |
-| |    - Account |  |    - Log       |
-| |              |  |                |
-| +--> TradeLog  |  | +--> Notif     |
-| |    - Log     |  |    - Send      |
-| |              |  |                |
-| +--> Notif     |  |                |
-| |    - Send    |  |                |
-| |              |  |                |
-| +--> APIServer |  |                |
-|      - Status  |  |                |
-|      - Commands|  |                |
-+----------------+  +----------------+
-       |                |
-       v                v
-+----------------+  +----------------+
-| NinjaTraderAPI |  | Metrics/Visual |
-| - WebSocket    |  | - Win Rate     |
-| - REST Trades  |  | - Profit Factor|
-| - Account      |  | - Equity Curve |
-+----------------+  +----------------+
+[CentralTradingBot]
+   ├── Init Modules
+   │   ├── NinjaTraderAPI (live only)
+   │   ├── DataIngestion
+   │   ├── SignalGenerator
+   │   ├── RiskManagement
+   │   ├── TradeExecution
+   │   ├── Notification
+   │   ├── APIServer
+   │   └── TradeLogger
+   ├── Live Trading (start_live_trading)
+   │   ├── APIServer.start()
+   │   ├── DataIngestion.start_websocket → NinjaTraderAPI.start_websocket
+   │   ├── Loop:
+   │   │   ├── DataIngestion.fetch_live_data → NinjaTraderAPI.get_live_data
+   │   │   ├── SignalGenerator.process_tick
+   │   │   ├── RiskManagement.evaluate_signal
+   │   │   ├── TradeExecution.execute_trade → NinjaTraderAPI.place_order
+   │   │   ├── TradeLogger.log_trade
+   │   │   ├── RiskManagement.update_trade_result
+   │   │   └── Notification.send_notification
+   │   └── Stop (APIServer /stop) → stop()
+   └── Backtesting (start_backtest)
+       ├── DataIngestion.load_historical_data
+       ├── SignalGenerator.load_historical_data
+       ├── For each timeframe:
+       │   ├── SignalGenerator.generate_signal_for_tf
+       │   ├── RiskManagement.evaluate_signal
+       │   ├── TradeExecution.execute_backtest_trades
+       │   └── TradeLogger.log_trades
+       └── Notification.send_notification
