@@ -4,12 +4,13 @@
   },
   "ninja_trader_api": {
     "ws_url": "ws://127.0.0.1:8088",
-    "rest_url": "https://app.crosstrade.io/v1/send/Ih0yVAcJ/F4xqDBYyh-R-w8_6FaYUCA",
+    "rest_url": "https://app.crosstrade.io/v1/api",
+    "webhook_url": "https://app.crosstrade.io/v1/send/Ih0yVAcJ/F4xqDBYyh-R-w8_6FaYUCA",
     "api_key": "A_HhRVALPcyadtJ61U0YM-20LG_aqh7IQPQQhpZWw-Q"
   },
   "live_trading": {
     "subscriptions": [
-      {"command": "subscribe", "symbol": "NQ"}
+      {"command": "subscribe", "symbol": "NQ 03-25"}
     ]
   },
   "data_ingestion": {

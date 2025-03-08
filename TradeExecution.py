@@ -29,7 +29,7 @@ class TradeExecution:
             return None
 
         order = {
-            "symbol": "NQ",
+            "symbol": "NQ 03-25",
             "action": signal['action'],
             "quantity": signal['position_size'],
             "order_type": self.order_type,

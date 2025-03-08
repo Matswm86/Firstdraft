@@ -9,18 +9,19 @@ from datetime import datetime
 class NinjaTraderAPI:
     def __init__(self, config):
         """
-        Initialize NinjaTraderAPI with WebSocket (ninja-socket) and REST (CrossTrade) support.
+        Initialize NinjaTraderAPI with WebSocket (ninja-socket), REST (CrossTrade/NinjaTrader), and webhook support.
 
         Args:
-            config (dict): Configuration with ws_url, rest_url, and api_key.
+            config (dict): Configuration with ws_url, rest_url, webhook_url, and api_key.
         """
         self.config = config
-        self.ws_url = config.get('ws_url', 'ws://127.0.0.1:8088')  # ninja-socket default
-        self.rest_url = config.get('rest_url', 'https://app.crosstrade.io/v1/send/Ih0yVAcJ/F4xqDBYyh-R-w8_6FaYUCA')  # CrossTrade default (adjust port)
-        self.api_key = config.get('A_HhRVALPcyadtJ61U0YM-20LG_aqh7IQPQQhpZWw-Q')  # From CrossTrade setup
+        self.ws_url = config.get('ws_url', 'ws://127.0.0.1:8088')  # ninja-socket WebSocket
+        self.rest_url = config.get('rest_url', 'https://app.crosstrade.io/v1/api')  # CrossTrade REST
+        self.webhook_url = config.get('webhook_url')  # CrossTrade webhook
+        self.api_key = config.get('api_key')  # CrossTrade or NinjaTrader key
         self.logger = logging.getLogger(__name__)
-        self.tick_queue = queue.Queue()      # For WebSocket market data
-        self.response_queue = queue.Queue()  # For WebSocket command responses
+        self.tick_queue = queue.Queue()      # For WebSocket live data
+        self.response_queue = queue.Queue()  # For WebSocket/REST responses
         self.ws = None
         self.ws_thread = None
         self.connected = False
@@ -31,7 +32,7 @@ class NinjaTraderAPI:
         Start WebSocket connection to ninja-socket for live data.
 
         Args:
-            subscriptions (list): List of subscription requests (e.g., [{"command": "subscribe", "symbol": "NQ"}]).
+            subscriptions (list): List of subscription requests (e.g., [{"command": "subscribe", "symbol": "NQ 03-25"}]).
         """
         def on_message(ws, message):
             try:
@@ -82,35 +83,105 @@ class NinjaTraderAPI:
             self.logger.error(f"Failed to fetch live data: {str(e)}")
             return None
 
-    def place_order(self, order):
+    def get_quote(self, instrument, account="Sim101"):
         """
-        Place an order via CrossTrade REST API.
+        Fetch a quote via CrossTrade REST API.
+
+        Args:
+            instrument (str): Symbol (e.g., "NQ 03-25").
+            account (str): NinjaTrader account name (default: "Sim101").
+
+        Returns:
+            dict or None: Quote data or None if failed.
+        """
+        url = f"{self.rest_url}/accounts/{account}/quote?instrument={instrument.replace(' ', '%20')}"
+        try:
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            result = response.json()
+            self.logger.debug(f"Quote retrieved: {result}")
+            return result
+        except Exception as e:
+            self.logger.error(f"Failed to get quote via REST: {str(e)}")
+            return None
+
+    def place_order(self, order, use_webhook=True):
+        """
+        Place an order via CrossTrade webhook (default) or REST/WebSocket if specified.
 
         Args:
             order (dict): Order details (e.g., symbol, action, quantity).
+            use_webhook (bool): If True, use webhook; if False, attempt REST/WebSocket.
 
         Returns:
-            dict or None: REST response or None if failed.
+            dict or None: Response if successful, None if failed.
         """
-        url = f"{self.rest_url}/orders"  # Adjust based on CrossTrade API docs
-        try:
-            response = requests.post(url, headers=self.headers, json=order)
-            response.raise_for_status()
-            result = response.json()
-            self.logger.info(f"Order placed via REST: {result}")
-            return result
-        except Exception as e:
-            self.logger.error(f"REST order placement failed: {str(e)}")
-            return None
+        if use_webhook and self.webhook_url:
+            # Webhook method (proven working)
+            headers = {"Content-Type": "text/plain", "Origin": "crosstrade.io"}
+            payload = (
+                f"key={self.api_key};"
+                f"command=PLACE;"
+                f"account=Sim101;"  # Adjust if your account differs
+                f"instrument={order['symbol']};"
+                f"action={order['action'].upper()};"
+                f"qty={order['quantity']};"
+                f"tif=DAY;"
+                f"order_type={order['order_type'].upper()};"
+            )
+            if order.get('stop_loss'):
+                payload += f"stop_loss={order['stop_loss']};"
+            if order.get('take_profit'):
+                payload += f"take_profit={order['take_profit']};"
+            try:
+                response = requests.post(self.webhook_url, headers=headers, data=payload)
+                response.raise_for_status()
+                result = {"status": "success", "response": response.text}
+                self.logger.info(f"Order placed via webhook: {result}")
+                return result
+            except Exception as e:
+                self.logger.error(f"Webhook order placement failed: {str(e)}")
+                return None
+        else:
+            # REST method (tentative, needs correct endpoint)
+            url = f"{self.rest_url}/accounts/Sim101/orders"  # Placeholder—adjust if confirmed
+            try:
+                response = requests.post(url, headers=self.headers, json=order)
+                response.raise_for_status()
+                result = response.json()
+                self.logger.info(f"Order placed via REST: {result}")
+                return result
+            except Exception as e:
+                self.logger.error(f"REST order placement failed: {str(e)}")
+                # Fallback to WebSocket if connected
+                if self.connected and self.ws:
+                    order_msg = {
+                        "command": "place_order",
+                        "symbol": order["symbol"],
+                        "action": order["action"],
+                        "quantity": order["quantity"],
+                        "order_type": order["order_type"],
+                        "stop_loss": order.get("stop_loss"),
+                        "take_profit": order.get("take_profit")
+                    }
+                    try:
+                        self.ws.send(json.dumps(order_msg))
+                        self.logger.info("Order sent via WebSocket")
+                        response = self.response_queue.get(timeout=5)
+                        self.logger.info(f"WebSocket order response: {response}")
+                        return response
+                    except Exception as e2:
+                        self.logger.error(f"WebSocket order failed: {str(e2)}")
+                return None
 
     def get_account_status(self):
         """
-        Get account status via CrossTrade REST API.
+        Get account status via CrossTrade REST API (placeholder endpoint).
 
         Returns:
             dict or None: Account details or None if failed.
         """
-        url = f"{self.rest_url}/account"  # Adjust based on CrossTrade API docs
+        url = f"{self.rest_url}/accounts/Sim101/account"  # Placeholder—needs confirmation
         try:
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()
@@ -123,15 +194,15 @@ class NinjaTraderAPI:
 
     def close_position(self, position_id):
         """
-        Close a position via CrossTrade REST API.
+        Close a position via CrossTrade REST API (placeholder endpoint).
 
         Args:
             position_id (str): ID of the position to close.
 
         Returns:
-            dict or None: REST response or None if failed.
+            dict or None: Response if successful, None if failed.
         """
-        url = f"{self.rest_url}/positions/{position_id}/close"  # Adjust based on CrossTrade API docs
+        url = f"{self.rest_url}/accounts/Sim101/positions/{position_id}/close"  # Placeholder
         try:
             response = requests.post(url, headers=self.headers)
             response.raise_for_status()
