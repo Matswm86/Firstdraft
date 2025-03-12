@@ -1,227 +1,205 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
+
 
 class RiskManagement:
-    def __init__(self, config, trade_execution=None):
+    def __init__(self, config):
         """
-        Initialize RiskManagement with configuration and optional TradeExecution instance.
+        Initialize RiskManagement with configuration settings for The 5%ers MT5 trading.
 
         Args:
-            config (dict): Configuration dictionary with risk parameters.
-            trade_execution (TradeExecution, optional): Instance for live account updates.
+            config (dict): Configuration dictionary with risk management settings.
         """
-        # Risk parameters from configuration
-        self.max_drawdown = config.get('max_drawdown', 0.065)
-        self.max_daily_loss = config.get('max_daily_loss', 0.02)
-        self.max_profit_per_day = config.get('max_profit_per_day', 0.04)
-        self.risk_per_trade = config.get('risk_per_trade', 0.01)
-        self.max_trades_per_day = config.get('max_trades_per_day', 5)
-        self.order_size_limit = config.get('order_size_limit', 100)
-        self.contract_multiplier = config.get('contract_multiplier', 20)
-        self.account_balance = config.get('initial_balance', 100000)
-        self.trade_execution = trade_execution  # For live updates, None in backtest
+        self.config = config
+        self.logger = logging.getLogger(__name__)
 
-        # Daily tracking variables
+        # Risk parameters from config
+        self.max_drawdown = config['risk_management'].get('max_drawdown', 0.04)  # 4% max drawdown per The 5%ers
+        self.max_daily_loss = config['risk_management'].get('max_daily_loss', 0.02)  # 2% daily loss limit
+        self.max_profit_per_day = config['risk_management'].get('max_profit_per_day', 0.04)  # 4% daily profit target
+        self.risk_per_trade = config['risk_management'].get('risk_per_trade', 0.01)  # 1% risk per trade
+        self.max_trades_per_day = config['risk_management'].get('max_trades_per_day', 5)  # Max 5 trades/day
+        self.initial_balance = config['risk_management'].get('initial_balance', 100000)  # Starting capital
+        self.commission_per_lot = config['risk_management'].get('commission_per_lot', 7.0)  # $7 per lot
+        self.slippage_pips = config['risk_management'].get('slippage_pips', {'EURUSD': 2.0, 'GBPJPY': 3.0})  # Pips
+
+        # Tracking variables
+        self.current_balance = self.initial_balance
         self.daily_loss = 0
         self.daily_profit = 0
-        self.trade_count = 0
-        self.daily_reset_time = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        self.trades_today = 0
+        self.last_reset_date = None
 
-        # Logging setup
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    def reset_daily_counters(self):
+    def reset_daily_metrics(self, current_date):
         """
-        Reset daily tracking variables at the start of a new trading day.
-        """
-        now = datetime.utcnow()
-        if now >= self.daily_reset_time + timedelta(days=1):
-            self.daily_loss = 0
-            self.daily_profit = 0
-            self.trade_count = 0
-            self.daily_reset_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            self.logger.info("Daily counters reset.")
-
-    def update_account_balance(self):
-        """
-        Fetch real-time account balance and P&L from TradeExecution via CrossTrade REST API.
-
-        Returns:
-            bool: True if balance updated successfully, False otherwise.
-        """
-        if self.trade_execution:
-            try:
-                account_info = self.trade_execution.get_account_status()
-                if account_info:
-                    self.account_balance = account_info.get('balance', self.account_balance)
-                    self.daily_profit = account_info.get('daily_profit', self.daily_profit)  # From CrossTrade REST
-                    self.daily_loss = account_info.get('daily_loss', self.daily_loss)        # From CrossTrade REST
-                    self.logger.info(f"Account updated: balance={self.account_balance}, "
-                                   f"profit={self.daily_profit}, loss={self.daily_loss}")
-                    return True
-            except Exception as e:
-                self.logger.error(f"Failed to update account balance: {str(e)}")
-        self.logger.debug("No TradeExecution instance; using static balance for backtest")
-        return False
-
-    def calculate_position_size(self, signal):
-        """
-        Calculate position size and stop-loss based on risk parameters and signal data.
+        Reset daily metrics at the start of a new trading day.
 
         Args:
-            signal (dict): Trading signal with 'entry_price', 'atr', etc.
+            current_date (date): The current trading day's date.
+        """
+        if self.last_reset_date is None or current_date > self.last_reset_date:
+            self.daily_loss = 0
+            self.daily_profit = 0
+            self.trades_today = 0
+            self.last_reset_date = current_date
+            self.logger.info(f"Daily metrics reset for {current_date}")
+
+    def check_risk_limits(self, account_status):
+        """
+        Check if current metrics comply with risk limits.
+
+        Args:
+            account_status (dict): Current account balance and positions.
 
         Returns:
-            tuple: (position_size, stop_loss_price)
+            bool: True if within limits, False otherwise.
         """
-        entry_price = signal.get('entry_price')
-        atr = signal.get('atr', 1.0)  # Default to 1.0 if missing
-        stop_loss_distance = atr * 1.5  # Customizable ATR multiplier
-
-        # Calculate stop-loss price
-        stop_loss_price = (entry_price - stop_loss_distance if signal['action'] == 'buy'
-                         else entry_price + stop_loss_distance)
-        risk_per_contract = abs(entry_price - stop_loss_price) * self.contract_multiplier
-
-        if risk_per_contract <= 0:
-            self.logger.warning("Risk per contract is zero or negative")
-            return 0, stop_loss_price
-
-        risk_per_trade_amount = self.account_balance * self.risk_per_trade
-        position_size = risk_per_trade_amount / risk_per_contract
-
-        if position_size > self.order_size_limit:
-            position_size = self.order_size_limit
-            self.logger.info(f"Position size capped at {self.order_size_limit}")
-
-        return round(position_size), stop_loss_price
-
-    def check_risk_limits(self):
-        """
-        Check if risk limits allow a new trade.
-
-        Returns:
-            bool: True if within limits, False if exceeded.
-        """
-        self.reset_daily_counters()  # Ensure counters are reset if day has passed
-
-        if self.daily_loss >= self.max_daily_loss * self.account_balance:
-            self.logger.warning("Maximum daily loss exceeded")
+        # Check max drawdown
+        balance = account_status['balance']
+        equity = balance + sum(pos.profit for pos_list in account_status['positions'].values()
+                               for pos in (pos_list or []))
+        drawdown = max(0, (self.initial_balance - equity) / self.initial_balance)
+        if drawdown >= self.max_drawdown:
+            self.logger.warning(
+                f"Risk limits exceeded: Max drawdown breached ({drawdown:.2%} >= {self.max_drawdown:.2%})")
             return False
 
-        if self.daily_profit >= self.max_profit_per_day * self.account_balance:
-            self.logger.warning("Maximum daily profit exceeded")
+        # Check daily loss limit
+        if self.daily_loss >= self.max_daily_loss * self.initial_balance:
+            self.logger.warning(
+                f"Max daily loss reached ({self.daily_loss:.2f} >= {self.max_daily_loss * self.initial_balance:.2f})")
             return False
 
-        if self.trade_count >= self.max_trades_per_day:
-            self.logger.warning("Maximum daily trade count reached")
+        # Check max trades per day
+        if self.trades_today >= self.max_trades_per_day:
+            self.logger.warning("Max trades per day reached")
             return False
 
-        # Check drawdown (simplified as cumulative loss from initial balance)
-        if (self.account_balance - self.daily_loss) < (1 - self.max_drawdown) * self.config.get('initial_balance', 100000):
-            self.logger.warning("Maximum drawdown exceeded")
-            return False
+        # Check daily profit target (optional action)
+        if self.daily_profit >= self.max_profit_per_day * self.initial_balance:
+            self.logger.info("Max daily profit reached; trading can continue or pause based on strategy")
+            # Here, we allow continuation, but this can be adjusted
 
         return True
 
-    def evaluate_signal(self, signal):
+    def evaluate_signal(self, signal, current_date, account_status):
         """
-        Evaluate a trading signal, adjust with risk parameters, and return the adjusted signal.
+        Evaluate a trading signal against risk criteria and calculate order size.
 
         Args:
-            signal (dict): Trading signal with 'action', 'entry_price', 'atr', etc.
+            signal (dict): Contains 'entry_price', 'stop_loss', 'action', and 'symbol'.
+            current_date (date): Current trading day's date.
+            account_status (dict): Current account balance and positions.
 
         Returns:
-            dict or None: Adjusted signal if valid, None if rejected by risk limits.
+            dict or None: Updated signal with volume, or None if invalid.
         """
-        if 'entry_price' not in signal or 'atr' not in signal:
-            self.logger.warning("Signal lacks required data (entry_price or atr)")
+        self.reset_daily_metrics(current_date)
+
+        # Check trade count and risk limits
+        if not self.check_risk_limits(account_status):
             return None
 
-        # Update balance and check limits
-        self.update_account_balance()
-        if not self.check_risk_limits():
-            self.logger.info("Risk limits breached; signal rejected")
+        # Extract signal details
+        symbol = signal.get('symbol')
+        entry_price = signal.get('entry_price')
+        stop_loss = signal.get('stop_loss')
+        action = signal.get('action')
+
+        if stop_loss is None or entry_price is None or action not in ['buy', 'sell']:
+            self.logger.error(f"Invalid signal for {symbol}: Missing entry_price, stop_loss, or action")
             return None
 
-        position_size, stop_loss = self.calculate_position_size(signal)
-        if position_size <= 0:
-            self.logger.warning("Position size is zero or negative; signal rejected")
+        # Calculate risk per unit (in price terms)
+        risk_per_unit = abs(entry_price - stop_loss)
+        if risk_per_unit == 0:
+            self.logger.error(f"Invalid stop-loss for {symbol}: Same as entry price")
             return None
 
-        entry_price = signal['entry_price']
-        take_profit_distance = abs(entry_price - stop_loss) * 2  # 1:2 risk-reward
-        take_profit = (entry_price + take_profit_distance if signal['action'] == 'buy'
-                      else entry_price - take_profit_distance)
+        # Calculate dynamic order size (in lots)
+        max_risk_amount = self.current_balance * self.risk_per_trade
+        point = 0.0001 if symbol == 'EURUSD' else 0.01  # Pip size per The 5%ers asset specs
+        stop_loss_pips = risk_per_unit / point
+        pip_value_per_lot = 10 if symbol == 'EURUSD' else 1000 / entry_price  # Approx for GBPJPY
+        volume = max_risk_amount / (stop_loss_pips * pip_value_per_lot)
+        volume = round(volume, 2)  # MT5 lot size precision
 
-        # Break-even logic (simplified for backtest; live mode uses real-time price)
-        current_price = signal.get('current_price', entry_price)
-        break_even_price = (entry_price + take_profit_distance * 0.625 if signal['action'] == 'buy'
-                           else entry_price - take_profit_distance * 0.625)
-        break_even = ((signal['action'] == 'buy' and current_price >= break_even_price) or
-                      (signal['action'] == 'sell' and current_price <= break_even_price))
+        if volume <= 0:
+            self.logger.warning(f"Calculated volume is zero or negative for {symbol}")
+            return None
 
-        if break_even:
-            self.logger.info("Break-even met; stop-loss adjusted to entry price")
-            stop_loss = entry_price
+        # Update signal with volume
+        signal['volume'] = volume
+        self.trades_today += 1
+        self.logger.info(f"Signal approved for {symbol}: Volume = {volume}")
+        return signal
 
-        adjusted_signal = {
-            'action': signal['action'],
-            'entry_price': entry_price,
-            'position_size': position_size,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'break_even': break_even,
-            'timestamp': datetime.utcnow()
-        }
-
-        self.trade_count += 1
-        # Preemptive daily loss increment (adjusted later by actual P&L)
-        self.daily_loss += self.risk_per_trade * self.account_balance
-        self.logger.debug(f"Adjusted signal: {adjusted_signal}")
-        return adjusted_signal
-
-    def update_trade_result(self, pnl):
+    def update_pnl(self, trade_result, exit_price):
         """
-        Update daily profit/loss counters based on trade outcome.
+        Update P&L based on the result of a closed trade.
 
         Args:
-            pnl (float): Profit/loss from the trade.
+            trade_result (dict): Contains 'profit_loss' (initially 0), 'commission_paid', 'entry_price', 'volume', etc.
+            exit_price (float): Price at which the trade was closed.
+
+        Returns:
+            float: Net profit/loss after commission.
         """
-        self.reset_daily_counters()  # Ensure counters are current
+        symbol = trade_result['symbol']
+        entry_price = trade_result['entry_price']
+        volume = trade_result['volume']  # In lots
+        action = trade_result['action']
 
-        # Adjust daily_loss preemption from evaluate_signal
-        self.daily_loss -= self.risk_per_trade * self.account_balance  # Remove preemptive loss
-        if pnl >= 0:
-            self.daily_profit += pnl
-            self.daily_loss = max(0, self.daily_loss - pnl)  # Reduce loss if over-counted
+        # Calculate profit/loss in pips
+        point = 0.0001 if symbol == 'EURUSD' else 0.01  # Pip size per The 5%ers asset specs
+        profit_loss_pips = (exit_price - entry_price) / point if action == 'buy' else (entry_price - exit_price) / point
+
+        # Convert to USD (pip value per lot: 10 for EURUSD, dynamic for GBPJPY)
+        pip_value_per_lot = 10 if symbol == 'EURUSD' else 1000 / exit_price  # Approx for GBPJPY
+        profit_loss = profit_loss_pips * pip_value_per_lot * volume
+
+        # Subtract commission
+        commission_paid = trade_result.get('commission_paid', volume * self.commission_per_lot)
+        net_profit_loss = profit_loss - commission_paid
+
+        # Update daily metrics
+        if net_profit_loss > 0:
+            self.daily_profit += net_profit_loss
         else:
-            self.daily_loss += abs(pnl)
+            self.daily_loss += abs(net_profit_loss)
 
-        self.account_balance += pnl  # Update balance for backtest simulation
-        self.logger.info(f"Trade result updated: P&L={pnl}, Balance={self.account_balance}")
+        # Update balance
+        self.current_balance += net_profit_loss
+        self.logger.info(
+            f"P&L updated for {symbol}: Net P&L = {net_profit_loss:.2f}, Balance = {self.current_balance:.2f}")
+        return net_profit_loss
 
-        if self.daily_profit >= self.max_profit_per_day * self.account_balance:
-            self.logger.info("Max daily profit reached; consider halting trading")
-        if self.daily_loss >= self.max_daily_loss * self.account_balance:
-            self.logger.info("Max daily loss reached; consider halting trading")
 
-# Example usage (for testing, commented out)
+# Example usage (for testing)
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     config = {
-        "max_drawdown": 0.065,
-        "max_daily_loss": 0.02,
-        "max_profit_per_day": 0.04,
-        "risk_per_trade": 0.01,
-        "max_trades_per_day": 5,
-        "order_size_limit": 100,
-        "contract_multiplier": 20,
-        "initial_balance": 100000
+        "risk_management": {
+            "max_drawdown": 0.04,
+            "max_daily_loss": 0.02,
+            "max_profit_per_day": 0.04,
+            "risk_per_trade": 0.01,
+            "max_trades_per_day": 5,
+            "initial_balance": 100000,
+            "commission_per_lot": 7.0,
+            "slippage_pips": {"EURUSD": 2.0, "GBPJPY": 3.0}
+        }
     }
     rm = RiskManagement(config)
-    signal = {"action": "buy", "entry_price": 12000, "atr": 25, "current_price": 12030}
-    evaluated_signal = rm.evaluate_signal(signal)
-    print("Evaluated Signal:", evaluated_signal)
-    if evaluated_signal:
-        rm.update_trade_result(100)  # Example profit
+    signal = {
+        "symbol": "EURUSD",
+        "entry_price": 1.0900,
+        "stop_loss": 1.0890,
+        "action": "buy"
+    }
+    account_status = {"balance": 100000, "positions": {"EURUSD": []}}
+    adjusted_signal = rm.evaluate_signal(signal, datetime.utcnow().date(), account_status)
+    print(adjusted_signal)
+    trade_result = {"symbol": "EURUSD", "entry_price": 1.0900, "volume": 0.1, "commission_paid": 0.7, "action": "buy"}
+    profit_loss = rm.update_pnl(trade_result, 1.0920)
+    print(f"Profit/Loss: {profit_loss}")

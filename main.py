@@ -1,7 +1,7 @@
 import json
 import os
 import logging
-from central_trading_bot import CentralTradingBot
+from CentralTradingBot import CentralTradingBot
 
 
 def load_config(config_path='config.json'):
@@ -47,9 +47,12 @@ def setup_logging(log_config):
         log_config (dict): Logging configuration from config.json.
     """
     log_level = log_config.get("log_level", "INFO").upper()
-    log_file = log_config.get("log_file", "trading_bot.log")
+    log_file = log_config.get("trade_log_file", "logs/trades.csv")  # Using trade log file for consistency
+    log_dir = os.path.dirname(log_file)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir)
     logging.basicConfig(
-        filename=log_file,
+        filename='trading_bot.log',  // Separate log file for bot events
         level=getattr(logging, log_level, logging.INFO),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
@@ -63,7 +66,7 @@ def main():
     # Load configuration and set up logging
     config = load_config('config.json')
     setup_logging(config.get('trade_logger', {}))
-    logging.info("Starting trading bot...")
+    logging.info("Starting trading bot for The 5%ers on MT5...")
 
     try:
         # Initialize the central trading bot with configuration
@@ -72,14 +75,17 @@ def main():
         # Determine the mode and start the appropriate process
         mode = config.get('central_trading_bot', {}).get('mode', 'live').lower()
         if mode == 'backtest':
+            logging.info("Running in backtest mode with existing NASDAQ futures data...")
             bot.start_backtest()
         elif mode == 'live':
+            logging.info("Running in live mode with EURUSD and GBPJPY on MT5...")
             bot.start_live_trading()
         else:
             logging.error(f"Invalid trading mode '{mode}' specified in configuration.")
             exit(1)
     except Exception as e:
         logging.error(f"Failed to start bot: {str(e)}")
+        bot.shutdown()  // Ensure MT5 connection is closed on error
         exit(1)
 
 

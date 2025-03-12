@@ -5,16 +5,17 @@ import pandas as pd
 import numpy as np
 import ta  # Technical analysis library for feature engineering
 
+
 class MachineLearning:
     def __init__(self, config):
         """
-        Initialize the MachineLearning module with a configuration.
+        Initialize the MachineLearning module for The 5%ers MT5 trading with EURUSD and GBPJPY.
 
         Args:
             config (dict): Configuration dictionary with model settings.
         """
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(__name__)
         self.models = {}  # Dictionary to hold multiple models
         self.trained = False  # Flag to indicate if models are trained
 
@@ -25,7 +26,7 @@ class MachineLearning:
         """
         Load and initialize machine learning models based on configuration.
         """
-        model_configs = self.config.get('models', [])
+        model_configs = self.config.get('machine_learning', {}).get('models', [])
         if not model_configs:
             self.logger.warning("No models specified in config; ML functionality disabled")
             return
@@ -38,8 +39,8 @@ class MachineLearning:
                     max_depth=model_config.get('max_depth', 10),
                     random_state=42  # For reproducibility
                 )
-                self.logger.info(f"Initialized {model_type} model with n_estimators={model_config.get('n_estimators', 100)}, max_depth={model_config.get('max_depth', 10)}")
-            # Placeholder for future model types (e.g., 'gradient_boosting', 'neural_network')
+                self.logger.info(f"Initialized {model_type} model with n_estimators={model_config.get('n_estimators', 100)}, "
+                                 f"max_depth={model_config.get('max_depth', 10)}")
             else:
                 self.logger.warning(f"Model type '{model_type}' not yet supported")
 
@@ -102,7 +103,7 @@ class MachineLearning:
 
     def enhance_signals(self, signals, data):
         """
-        Enhance trading signals using machine learning models.
+        Enhance trading signals using machine learning models for EURUSD and GBPJPY.
 
         Args:
             signals (list): List of trading signals from SignalGenerator.
@@ -123,13 +124,12 @@ class MachineLearning:
         # Generate features from market data
         features = self.generate_features(data)
 
-        # Align features with signals (assuming signals correspond to the latest data points)
+        # Align features with signals (assuming signals correspond to latest data points)
         if len(features) < len(signals):
             self.logger.error(f"Feature data length ({len(features)}) less than signals length ({len(signals)})")
             return signals
         elif len(features) > len(signals):
-            # Trim features to match signals (assuming signals are the latest entries)
-            features = features.tail(len(signals))
+            features = features.tail(len(signals))  # Trim to match signals
 
         # Predict using the ensemble
         predictions = self.predict(features)
@@ -137,7 +137,7 @@ class MachineLearning:
             self.logger.error("Prediction failed; returning original signals")
             return signals
 
-        # Enhance signals: filter based on positive predictions (1 for buy/sell confirmation)
+        # Enhance signals: filter based on positive predictions (1 for trade confirmation)
         enhanced_signals = []
         for signal, pred in zip(signals, predictions):
             if pred == 1:  # Assuming 1 indicates a valid trade
@@ -164,10 +164,14 @@ class MachineLearning:
 
         features = data.copy()
         try:
-            # Example features: moving average, RSI, and volatility
+            # Example features for EURUSD and GBPJPY
             features['ma_50'] = data['Close'].rolling(window=50, min_periods=1).mean()
             features['rsi'] = ta.momentum.RSIIndicator(data['Close'], window=14).rsi()
             features['volatility'] = data['Close'].rolling(window=20, min_periods=1).std()
+            features['macd'] = ta.trend.MACD(data['Close']).macd()
+            features['bollinger_upper'] = ta.volatility.BollingerBands(data['Close']).bollinger_hband()
+            features['bollinger_lower'] = ta.volatility.BollingerBands(data['Close']).bollinger_lband()
+
             # Drop NaN values from indicators
             features = features.dropna()
             self.logger.debug(f"Generated features with shape: {features.shape}")
@@ -190,28 +194,30 @@ class MachineLearning:
         """
         try:
             X_train, X_test, y_train, y_test = train_test_split(data, target,
-                                                              test_size=test_size,
-                                                              random_state=42)
+                                                                test_size=test_size,
+                                                                random_state=42)
             self.logger.info(f"Data split: {len(X_train)} train, {len(X_test)} test samples")
             return X_train, X_test, y_train, y_test
         except Exception as e:
             self.logger.error(f"Train-test split failed: {str(e)}")
             return None
 
+
 # Example usage (commented out for reference)
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     config = {
-        "models": [
-            {"type": "random_forest", "n_estimators": 100, "max_depth": 10}
-        ]
+        "machine_learning": {
+            "models": [
+                {"type": "random_forest", "n_estimators": 100, "max_depth": 10}
+            ]
+        }
     }
     ml = MachineLearning(config)
     # Example data and signals
     data = pd.DataFrame({'Close': np.random.rand(100)})
-    signals = [{"action": "buy", "entry_price": p} for p in data['Close']]
-    # Dummy target for training (e.g., 1 for buy, 0 for no action)
-    target = pd.Series(np.random.randint(0, 2, size=100))
+    signals = [{"action": "buy", "entry_price": p, "symbol": "EURUSD"} for p in data['Close']]
+    target = pd.Series(np.random.randint(0, 2, size=100))  # Dummy target: 1 for trade, 0 for no trade
     features = ml.generate_features(data)
     split = ml.train_test_split_data(features, target)
     if split:

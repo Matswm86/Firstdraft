@@ -1,141 +1,91 @@
-import pandas as pd
-import json
+import backtrader as bt
 import logging
-from SignalGenerator import SignalGenerator
-from RiskManagement import RiskManagement
-from TradeExecution import TradeExecution
-import matplotlib.pyplot as plt
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Load backtest settings from config.json
-with open("config.json", "r") as config_file:
-    config = json.load(config_file)
+from BacktraderStrategy import BacktraderStrategy
+from DataIngestion import DataIngestion
 
 
-def load_historical_data(config):
+class Backtesting:
     """
-    Loads historical data for multiple timeframes based on the configuration.
-
-    Args:
-        config (dict): Configuration dictionary containing data paths and timeframe files.
-
-    Returns:
-        dict: Dictionary mapping timeframes to their respective DataFrames.
+    Backtesting class for running a backtest on NASDAQ futures data using Backtrader.
+    Note: This remains unchanged for backtesting and does not apply to live MT5 trading with The 5%ers.
     """
-    historical_data = {}
-    data_dir = config['data_ingestion']['historical_data_path']
-    for timeframe, filename in config['data_ingestion']['timeframe_files'].items():
-        file_path = f"{data_dir}/{filename}"
+    def __init__(self, config):
+        """
+        Initialize Backtesting with configuration settings.
+
+        Args:
+            config (dict): Configuration dictionary with backtesting settings.
+        """
+        self.config = config
+        self.logger = logging.getLogger(__name__)
+        self.data_ingestion = DataIngestion(config)
+        self.symbols = config['backtesting']['symbols']  # e.g., ["NQ 03-25"]
+        self.commission = config['backtesting'].get('commission', 0.001)  # Example commission
+        self.slippage = config['backtesting'].get('slippage', 0.001)  # Example slippage
+        self.enable_multi_asset = config['backtesting'].get('enable_multi_asset', False)
+
+    def run(self):
+        """Run the backtest using Backtrader."""
         try:
-            df = pd.read_csv(file_path, parse_dates=["datetime"], index_col="datetime")
-            historical_data[timeframe] = df
-            logger.info(f"Loaded historical data for {timeframe} from {file_path}")
-        except FileNotFoundError:
-            logger.error(f"File not found: {file_path}")
+            # Initialize Cerebro
+            cerebro = bt.Cerebro()
+            cerebro.addstrategy(BacktraderStrategy)
+
+            # Load historical data
+            historical_data = self.data_ingestion.load_historical_data()
+            if not historical_data:
+                self.logger.error("No historical data available for backtesting")
+                return
+
+            # Add data feeds (assuming 15m timeframe for backtesting as per original intent)
+            for (symbol, timeframe), df in historical_data.items():
+                if df is not None and timeframe == '15m':  # Filter for 15m as per requirement
+                    data = bt.feeds.PandasData(dataname=df)
+                    cerebro.adddata(data, name=symbol)
+                    self.logger.info(f"Added {symbol} {timeframe} data to backtest")
+
+            # Set initial cash and broker settings
+            cerebro.broker.set_cash(100000)  # Starting cash
+            cerebro.broker.setcommission(commission=self.commission)
+            cerebro.broker.set_slippage(self.slippage)
+
+            # Run the backtest
+            self.logger.info("Starting backtest for NASDAQ futures...")
+            cerebro.run()
+            self.logger.info(f"Backtest completed. Final portfolio value: {cerebro.broker.getvalue():.2f}")
+
+            # Plot results (optional, comment out if not needed)
+            cerebro.plot()
+
         except Exception as e:
-            logger.error(f"Error loading {file_path}: {str(e)}")
-    return historical_data
+            self.logger.error(f"Backtest failed: {str(e)}")
 
 
-def simulate_trades(signal_generator, risk_management, trade_execution, historical_data):
-    """
-    Runs backtesting simulation by generating signals, applying risk management, and simulating trades.
-
-    Args:
-        signal_generator (SignalGenerator): Instance of SignalGenerator module.
-        risk_management (RiskManagement): Instance of RiskManagement module.
-        trade_execution (TradeExecution): Instance of TradeExecution module for backtest simulation.
-        historical_data (dict): Historical data for multiple timeframes.
-
-    Returns:
-        list: List of trade results, each containing profit information.
-    """
-    results = []
-    signal_generator.load_historical_data(historical_data)
-
-    for tf in signal_generator.trading_timeframes:
-        try:
-            signal_generator.generate_signal_for_tf(tf)
-            if hasattr(signal_generator, 'last_signal') and signal_generator.last_signal:
-                adjusted_signal = risk_management.evaluate_signal(signal_generator.last_signal)
-                if adjusted_signal:
-                    # Simulate trade execution using TradeExecution
-                    trade_results = trade_execution.execute_backtest_trades()
-                    if trade_results:
-                        results.extend(trade_results)
-                        logger.info(f"Simulated trades for {tf}: {len(trade_results)} trades")
-        except Exception as e:
-            logger.error(f"Error simulating trades for {tf}: {str(e)}")
-
-    return results
-
-
-def calculate_performance_metrics(results):
-    """
-    Computes win rate and profit factor from trade results.
-
-    Args:
-        results (list): List of trade results with profit data.
-    """
-    if not results:
-        logger.warning("No trade results to analyze")
-        print("Win Rate: N/A")
-        print("Profit Factor: N/A")
-        return
-
-    wins = sum(1 for r in results if r["profit_loss"] > 0)
-    losses = sum(1 for r in results if r["profit_loss"] < 0)
-    total_trades = wins + losses
-
-    if total_trades == 0:
-        win_rate = 0
-        profit_factor = 0
-    else:
-        win_rate = wins / total_trades * 100
-        profit_factor = (sum(r["profit_loss"] for r in results if r["profit_loss"] > 0) /
-                         abs(sum(r["profit_loss"] for r in results if r["profit_loss"] < 0))) if losses > 0 else float(
-            'inf')
-
-    logger.info(f"Backtest Results - Win Rate: {win_rate:.2f}%, Profit Factor: {profit_factor:.2f}")
-    print(f"Win Rate: {win_rate:.2f}%")
-    print(f"Profit Factor: {profit_factor:.2f}")
-
-
-def visualize_results(results):
-    """
-    Plots the backtesting equity curve.
-
-    Args:
-        results (list): List of trade results with profit data.
-    """
-    if not results:
-        logger.warning("No trade results to visualize")
-        return
-
-    equity_curve = pd.Series([r["profit_loss"] for r in results]).cumsum()
-    plt.figure(figsize=(12, 6))
-    plt.plot(equity_curve, label="Equity Curve", color="blue")
-    plt.title("Backtesting Performance")
-    plt.xlabel("Trades")
-    plt.ylabel("Cumulative P/L")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    logger.info("Equity curve visualized")
-
-
-# Initialize modules with configuration
-signal_generator = SignalGenerator(config['signal_generation'])
-risk_management = RiskManagement(config['risk_management'])
-trade_execution = TradeExecution(config['ninja_trader_api'], None)  # No NinjaTraderAPI for backtesting
-
-# Load historical data
-historical_data = load_historical_data(config)
-
-# Run backtest
-trade_results = simulate_trades(signal_generator, risk_management, trade_execution, historical_data)
-calculate_performance_metrics(trade_results)
-visualize_results(trade_results)
+# Example usage (for testing)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    config = {
+        "central_trading_bot": {"mode": "backtest"},
+        "data_ingestion": {
+            "historical_data_path": "C:\\Users\\matsw\\PycharmProjects\\Firstdraft\\data",
+            "timeframe_files": {
+                "1d": "backtrader_1d.csv",
+                "4h": "backtrader_4h.csv",
+                "1h": "backtrader_1h.csv",
+                "30m": "backtrader_30m.csv",
+                "15m": "backtrader_15m.csv",
+                "5m": "backtrader_5m.csv",
+                "1m": "backtrader_1m.csv"
+            },
+            "delimiter": ",",
+            "column_names": ["datetime", "Open", "High", "Low", "Close", "Volume"]
+        },
+        "backtesting": {
+            "symbols": ["NQ 03-25"],
+            "commission": 0.001,
+            "slippage": 0.001,
+            "enable_multi_asset": False
+        }
+    }
+    backtesting = Backtesting(config)
+    backtesting.run()

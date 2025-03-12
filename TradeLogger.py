@@ -7,16 +7,16 @@ import os
 class TradeLogger:
     def __init__(self, config):
         """
-        Initialize the TradeLogger module with configuration settings.
+        Initialize the TradeLogger module with configuration settings for The 5%ers MT5 trading.
 
         Args:
             config (dict): Configuration dictionary with logging settings.
         """
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(__name__)
 
         # Extract logging settings from config
-        self.log_file = config.get('trade_log_file', 'trades.csv')
+        self.log_file = config.get('trade_log_file', 'logs/trades.csv')
         self.log_level = config.get('log_level', 'INFO').upper()
         self.real_time_log_level = config.get('real_time_log_level', 'DEBUG').upper()
 
@@ -62,15 +62,15 @@ class TradeLogger:
         try:
             # Prepare trade data with timestamp and order_id
             trade_data = {
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': trade.get('timestamp', datetime.utcnow().isoformat()),
                 'symbol': trade.get('symbol', 'Unknown'),
                 'action': trade.get('action', 'Unknown'),
                 'entry_price': float(trade.get('entry_price', 0.0)),
-                'position_size': int(trade.get('position_size', 0)),
+                'position_size': float(trade.get('position_size', trade.get('volume', 0))),  # Updated for MT5 volume
                 'stop_loss': float(trade.get('stop_loss', 0.0)),
                 'take_profit': float(trade.get('take_profit', 0.0)),
                 'profit_loss': float(trade.get('profit_loss', 0.0)),
-                'order_id': trade.get('order_id', 'N/A')  # Added for CrossTrade REST response
+                'order_id': trade.get('order_id', 'N/A')
             }
 
             # Log to console/file logger
@@ -115,9 +115,9 @@ if __name__ == "__main__":
     }
     logger = TradeLogger(config)
     sample_trades = [
-        {"symbol": "NQ", "action": "buy", "entry_price": 15000, "position_size": 2,
-         "stop_loss": 14950, "take_profit": 15100, "profit_loss": 200, "order_id": "12345"},
-        {"symbol": "NQ", "action": "sell", "entry_price": 15100, "position_size": 1,
-         "stop_loss": 15150, "take_profit": 15000, "profit_loss": -50, "order_id": "12346"}
+        {"symbol": "EURUSD", "action": "buy", "entry_price": 1.0900, "position_size": 0.1,
+         "stop_loss": 1.0890, "take_profit": 1.0920, "profit_loss": 20.0, "order_id": "12345"},
+        {"symbol": "GBPJPY", "action": "sell", "entry_price": 150.00, "position_size": 0.2,
+         "stop_loss": 150.50, "take_profit": 149.00, "profit_loss": -50.0, "order_id": "12346"}
     ]
     logger.log_trades(sample_trades)
