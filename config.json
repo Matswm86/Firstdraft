@@ -25,7 +25,7 @@
   "signal_generation": {
     "timeframes": ["1min", "5min", "15min", "30min", "1h", "4h", "daily"],
     "trading_timeframes": ["15min", "5min", "1min"],
-    "thresholds": {"15min": 5, "5min": 5, "1min": 8},
+    "thresholds": {"15min": 2, "5min": 2, "1min": 3},
     "max_bars": {"1min": 20160, "5min": 4032, "15min": 1344, "30min": 672, "1h": 336, "4h": 84, "daily": 14}
   },
   "risk_management": {

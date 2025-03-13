@@ -36,13 +36,11 @@ class RiskManagement:
                                for pos in (pos_list or []))
         drawdown = max(0, (self.initial_balance - equity) / self.initial_balance)
         if drawdown >= self.max_drawdown:
-            self.logger.warning(
-                f"Risk limits exceeded: Max drawdown breached ({drawdown:.2%} >= {self.max_drawdown:.2%})")
+            self.logger.warning(f"Risk limits exceeded: Max drawdown breached ({drawdown:.2%} >= {self.max_drawdown:.2%})")
             return False
 
         if self.daily_loss >= self.max_daily_loss * self.initial_balance:
-            self.logger.warning(
-                f"Max daily loss reached ({self.daily_loss:.2f} >= {self.max_daily_loss * self.initial_balance:.2f})")
+            self.logger.warning(f"Max daily loss reached ({self.daily_loss:.2f} >= {self.max_daily_loss * self.initial_balance:.2f})")
             return False
 
         if self.trades_today >= self.max_trades_per_day:
@@ -108,6 +106,5 @@ class RiskManagement:
             self.daily_loss += abs(net_profit_loss)
 
         self.current_balance += net_profit_loss
-        self.logger.info(
-            f"P&L updated for {symbol}: Net P&L = {net_profit_loss:.2f}, Balance = {self.current_balance:.2f}")
+        self.logger.info(f"P&L updated for {symbol}: Net P&L = {net_profit_loss:.2f}, Balance = {self.current_balance:.2f}")
         return net_profit_loss

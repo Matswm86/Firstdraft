@@ -46,7 +46,6 @@ class TradeExecution:
                     error = mt5.last_error()
                     self.logger.error(f"Trade failed for {symbol}: No result, Error: {error}")
                     return None
-                # Handle dictionary result
                 retcode = result.get('retcode', None) if isinstance(result, dict) else result.retcode
                 if retcode == mt5.TRADE_RETCODE_REQUOTE:
                     self.logger.warning(f"Requote for {symbol}, retrying ({attempt + 1}/{max_retries})")

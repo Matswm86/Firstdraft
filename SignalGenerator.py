@@ -6,7 +6,7 @@ from hurst import compute_Hc
 import ta
 import logging
 import MetaTrader5 as mt5
-
+import math
 
 class SignalGenerator:
     def __init__(self, config, mt5_api=None):
@@ -26,56 +26,38 @@ class SignalGenerator:
         self.current_bars = {symbol: {tf: None for tf in self.timeframes} for symbol in self.symbols}
         self.last_signals = {symbol: None for symbol in self.symbols}
 
-        self.real_time_data = {
-            symbol: {
-                'cumulative_delta': 0,
-                'delta_history': deque(maxlen=1000),
-                'bid_ask_imbalance': 0,
-                'composite_breadth_score': 0,
-                'tick': 0,
-                'cumulative_tick': 0,
-                'last_price': None,
-                'last_volume': 0
-            } for symbol in self.symbols
-        }
+        self.real_time_data = {symbol: {
+            'cumulative_delta': 0, 'delta_history': deque(maxlen=1000), 'bid_ask_imbalance': 0,
+            'composite_breadth_score': 0, 'tick': 0, 'cumulative_tick': 0, 'last_price': None, 'last_volume': 0
+        } for symbol in self.symbols}
 
-        self.timeframe_intervals = {
-            '1min': timedelta(minutes=1),
-            '5min': timedelta(minutes=5),
-            '15min': timedelta(minutes=15),
-            '30min': timedelta(minutes=30),
-            '1h': timedelta(hours=1),
-            '4h': timedelta(hours=4),
-            'daily': timedelta(days=1)
-        }
+        self.timeframe_intervals = {'1min': timedelta(minutes=1), '5min': timedelta(minutes=5),
+                                    '15min': timedelta(minutes=15), '30min': timedelta(minutes=30),
+                                    '1h': timedelta(hours=1), '4h': timedelta(hours=4), 'daily': timedelta(days=1)}
 
-        # Bootstrap historical data
+        self.freq_map = {'1min': 'min', '5min': '5min', '15min': '15min', '30min': '30min',
+                         '1h': 'h', '4h': '4h', 'daily': 'D'}
+
+        # Swing tracking for BOS and CHOCH
+        self.swing_highs = {symbol: {tf: deque(maxlen=10) for tf in self.timeframes} for symbol in self.symbols}
+        self.swing_lows = {symbol: {tf: deque(maxlen=10) for tf in self.timeframes} for symbol in self.symbols}
+        self.last_bos = {symbol: {tf: None for tf in self.timeframes} for symbol in self.symbols}
+
         if self.mt5_api:
             self._load_initial_history()
 
     def _load_initial_history(self):
         for symbol in self.symbols:
             for tf in self.timeframes:
-                mt5_tf = {
-                    '1min': mt5.TIMEFRAME_M1,
-                    '5min': mt5.TIMEFRAME_M5,
-                    '15min': mt5.TIMEFRAME_M15,
-                    '30min': mt5.TIMEFRAME_M30,
-                    '1h': mt5.TIMEFRAME_H1,
-                    '4h': mt5.TIMEFRAME_H4,
-                    'daily': mt5.TIMEFRAME_D1
-                }[tf]
-                rates = self.mt5_api.get_ohlc_data(symbol, mt5_tf, 100)  # Load 100 bars
+                mt5_tf = {'1min': mt5.TIMEFRAME_M1, '5min': mt5.TIMEFRAME_M5, '15min': mt5.TIMEFRAME_M15,
+                          '30min': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
+                          'daily': mt5.TIMEFRAME_D1}[tf]
+                rates = self.mt5_api.get_ohlc_data(symbol, mt5_tf, 100)
                 if rates:
                     for rate in rates:
-                        bar = {
-                            'timestamp': pd.to_datetime(rate['timestamp']),
-                            'open': rate['open'],
-                            'high': rate['high'],
-                            'low': rate['low'],
-                            'close': rate['close'],
-                            'volume': rate['volume']
-                        }
+                        bar = {'timestamp': pd.to_datetime(rate['timestamp'], utc=True),
+                               'open': rate['open'], 'high': rate['high'], 'low': rate['low'],
+                               'close': rate['close'], 'volume': rate['volume']}
                         self.histories[symbol][tf].append(bar)
                     df = pd.DataFrame([dict(b) for b in self.histories[symbol][tf]])
                     if len(df) >= 14:
@@ -104,7 +86,7 @@ class SignalGenerator:
             return None
         symbol = tick['symbol']
         try:
-            tick_time = pd.to_datetime(tick['timestamp'])
+            tick_time = pd.to_datetime(tick['timestamp'], utc=True)
             price = tick['price']
             volume = tick.get('volume', 0)
         except Exception as e:
@@ -121,23 +103,21 @@ class SignalGenerator:
         return self.last_signals[symbol]
 
     def _aggregate_tick(self, timeframe, tick_time, price, volume, symbol):
-        interval = self.timeframe_intervals[timeframe]
+        freq = self.freq_map[timeframe]
+        floored_time = tick_time.floor(freq=freq)
         current_bar = self.current_bars[symbol][timeframe]
-        if current_bar is None or tick_time >= current_bar['timestamp'] + interval:
+
+        if current_bar is None or floored_time > current_bar['timestamp']:
             if current_bar:
                 completed_bar = current_bar.copy()
                 self.histories[symbol][timeframe].append(completed_bar)
+                self.logger.debug(f"Completed bar for {symbol} on {timeframe}: {completed_bar}")
             else:
                 completed_bar = None
             self.current_bars[symbol][timeframe] = {
-                'timestamp': tick_time,
-                'open': price,
-                'high': price,
-                'low': price,
-                'close': price,
-                'volume': volume
+                'timestamp': floored_time, 'open': price, 'high': price,
+                'low': price, 'close': price, 'volume': volume
             }
-            self.logger.debug(f"Aggregated bar for {symbol} on {timeframe}: {self.current_bars[symbol][timeframe]}")
             return completed_bar
         else:
             current_bar['high'] = max(current_bar['high'], price)
@@ -152,8 +132,6 @@ class SignalGenerator:
         df = pd.DataFrame([dict(b) for b in self.histories[symbol][timeframe]])
         if len(df) >= 14:
             df = self.calculate_indicators(df, timeframe)
-            if self.config.get('ad_line_bars'):
-                df['ad_line'] = self.calculate_ad_line(df, self.config['ad_line_bars'])
             self.indicator_histories[symbol][timeframe] = df
             self.logger.debug(f"Updated indicator history for {symbol} on {timeframe}: {len(df)} bars")
 
@@ -180,18 +158,15 @@ class SignalGenerator:
 
         if bid != ask:
             rtd['bid_ask_imbalance'] = (bid - ask) / (bid + ask)
-        rtd['composite_breadth_score'] = (
-                rtd['composite_breadth_score'] * 0.9 +
-                rtd['tick'] * 0.1
-        )
+        rtd['composite_breadth_score'] = rtd['composite_breadth_score'] * 0.9 + rtd['tick'] * 0.1
         rtd['last_price'] = price
         rtd['last_volume'] = volume
 
     def calculate_indicators(self, df, timeframe):
-        atr_indicator = ta.volatility.AverageTrueRange(
-            high=df['high'], low=df['low'], close=df['close'],
-            window=14, fillna=True
-        )
+        """Calculate all indicators, including BOS, CHOCH, and Z-Score."""
+        # Existing indicators
+        atr_indicator = ta.volatility.AverageTrueRange(high=df['high'], low=df['low'], close=df['close'],
+                                                       window=14, fillna=True)
         df['atr'] = atr_indicator.average_true_range()
         lookback = max(1, min(100, int(df['atr'].iloc[-1] * 10) if not pd.isna(df['atr'].iloc[-1]) else 30))
         df['adaptive_ma'] = df['close'].rolling(window=lookback).mean()
@@ -200,11 +175,14 @@ class SignalGenerator:
         if vwap_type == 'daily':
             df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
         df['vwap_slope'] = df['vwap'].diff(periods=5) / 5
+
+        # Z-Score calculation
         df['zscore'] = (df['close'] - df['close'].rolling(window=20).mean()) / df['close'].rolling(window=20).std()
+
+        # Additional indicators
         if timeframe == 'daily' and len(df) > 100:
             H, _, _ = compute_Hc(df['close'], kind='price')
             df['hurst'] = H
-
         df['sma_slope'] = (df['adaptive_ma'] - df['adaptive_ma'].shift(5)) / 5
         df['avg_atr'] = df['atr'].rolling(window=20).mean()
         df['vwap_std'] = (df['close'] - df['vwap']).rolling(window=20).std()
@@ -213,42 +191,75 @@ class SignalGenerator:
         df['vwap_upper_2'] = df['vwap'] + 2 * df['vwap_std']
         df['vwap_lower_2'] = df['vwap'] - 2 * df['vwap_std']
 
+        # BOS and CHOCH detection
+        df = self.detect_bos_and_choch(df, timeframe, df['symbol'].iloc[0] if 'symbol' in df.columns else self.symbols[0])
+
         return df
 
-    def calculate_ad_line(self, df, bars):
-        ad = [0] * len(df)
+    def detect_bos_and_choch(self, df, timeframe, symbol):
+        """Separate logic for detecting BOS and CHOCH."""
+        # Swing high/low detection (5-bar window, centered)
+        df['swing_high'] = df['high'].rolling(window=5, center=True).max()
+        df['swing_low'] = df['low'].rolling(window=5, center=True).min()
+
+        # Initialize columns
+        df['bos_detected'] = False
+        df['bos_direction'] = None
+        df['choch_detected'] = False
+
         for i in range(1, len(df)):
-            if i < bars:
-                ad[i] = ad[i - 1]
-            else:
-                high = df['high'].iloc[i]
-                low = df['low'].iloc[i]
-                mf = ((df['close'].iloc[i] - low) - (high - df['close'].iloc[i])) / (high - low) if high != low else 0
-                ad[i] = ad[i - 1] + mf * df['volume'].iloc[i]
-        return ad
+            # BOS Detection
+            if df['close'].iloc[i] > df['swing_high'].iloc[i-1] and not pd.isna(df['swing_high'].iloc[i-1]):
+                df.at[df.index[i], 'bos_detected'] = True
+                df.at[df.index[i], 'bos_direction'] = 'uptrend'
+                self.last_bos[symbol][timeframe] = {'index': i, 'direction': 'uptrend'}
+            elif df['close'].iloc[i] < df['swing_low'].iloc[i-1] and not pd.isna(df['swing_low'].iloc[i-1]):
+                df.at[df.index[i], 'bos_detected'] = True
+                df.at[df.index[i], 'bos_direction'] = 'downtrend'
+                self.last_bos[symbol][timeframe] = {'index': i, 'direction': 'downtrend'}
 
-    def calculate_volume_delta_oscillator(self, symbol, tf, window=20):
-        df = self.indicator_histories[symbol].get(tf, pd.DataFrame())
-        if df.empty or len(df) < window:
-            return 0
-        delta = df['close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0)) * df['volume']
-        cumulative_delta = delta.rolling(window=min(window, len(df))).sum()
-        total_volume = df['volume'].rolling(window=min(window, len(df))).sum()
-        oscillator = cumulative_delta / total_volume if total_volume.iloc[-1] != 0 else 0
-        return oscillator.iloc[-1]
+            # CHOCH Detection (no new high/low within 5 bars after BOS)
+            if self.last_bos[symbol][timeframe]:
+                bos_index = self.last_bos[symbol][timeframe]['index']
+                bos_direction = self.last_bos[symbol][timeframe]['direction']
+                if bos_direction == 'uptrend' and i > bos_index + 5:
+                    if df['high'].iloc[bos_index:i].max() <= df['high'].iloc[bos_index]:
+                        df.at[df.index[i], 'choch_detected'] = True
+                elif bos_direction == 'downtrend' and i > bos_index + 5:
+                    if df['low'].iloc[bos_index:i].min() >= df['low'].iloc[bos_index]:
+                        df.at[df.index[i], 'choch_detected'] = True
 
-    def generate_signal_for_tf(self, trading_tf, symbol):
-        rtd = self.real_time_data[symbol]
-        if rtd['last_price'] is None:
-            self.logger.debug(f"No price data yet for {symbol} on {trading_tf}")
-            return
+        return df
 
-        df = self.indicator_histories[symbol][trading_tf]
-        if df.empty or len(df) < 14:
-            self.logger.debug(f"Insufficient indicator history for {symbol} on {trading_tf}: {len(df)} bars")
-            return
+    def get_required_bars(self, timeframe):
+        tf_minutes = {'1min': 1, '5min': 5, '15min': 15, '30min': 30, '1h': 60, '4h': 240, 'daily': 1440}[timeframe]
+        min_duration_minutes = 15
+        required_bars = max(3, math.ceil(min_duration_minutes / tf_minutes))
+        return required_bars
 
-        weights = self.config.get('confluence_weights', {
+    def check_confluence_persistence(self, df, timeframe, current_time):
+        required_bars = self.get_required_bars(timeframe)
+        if len(df) < required_bars:
+            self.logger.debug(f"Not enough completed bars for {timeframe}: {len(df)} < {required_bars}")
+            return False
+
+        for i in range(-1, -required_bars - 1, -1):
+            score = self.calculate_confluence_score(df.iloc[i])
+            if score < self.thresholds.get(timeframe, 5):
+                self.logger.debug(f"Confluence not persistent at bar {i}: Score {score}")
+                return False
+
+        earliest_bar_time = df['timestamp'].iloc[-required_bars]
+        min_duration = timedelta(minutes=15)
+        if (current_time - earliest_bar_time) < min_duration:
+            self.logger.debug(f"Confluence duration too short: {(current_time - earliest_bar_time).total_seconds() / 60:.2f} minutes")
+            return False
+        return True
+
+    def calculate_confluence_score(self, bar):
+        """Calculate confluence score including BOS, CHOCH, and Z-Score."""
+        score = 0
+        weights = {
             'hurst_exponent': 3,
             'adaptive_moving_average': 2,
             'bos': 2,
@@ -257,174 +268,92 @@ class SignalGenerator:
             'bid_ask_imbalance': 2,
             'cumulative_delta': 3,
             'tick_filter': 1,
-            'smt_confirmation': 1,
             'price_near_vwap': 2,
             'liquidity_zone': 2,
             'zscore_deviation': 2,
             'vwap_slope': 1
-        })
+        }
+
+        signal_direction = "uptrend" if bar['close'] > bar['adaptive_ma'] else "downtrend"
+
+        # Adaptive Moving Average
+        if signal_direction == "uptrend" and bar['sma_slope'] > 0.0001:
+            score += weights['adaptive_moving_average']
+        elif signal_direction == "downtrend" and bar['sma_slope'] < -0.0001:
+            score += weights['adaptive_moving_average']
+
+        # VWAP Slope
+        if signal_direction == "uptrend" and bar['vwap_slope'] > 0:
+            score += weights['vwap_slope']
+        elif signal_direction == "downtrend" and bar['vwap_slope'] < 0:
+            score += weights['vwap_slope']
+
+        # Hurst Exponent
+        if 'hurst' in bar and bar['hurst'] > 0.5:
+            score += weights['hurst_exponent']
+
+        # BOS
+        if 'bos_detected' in bar and bar['bos_detected'] and bar['bos_direction'] == signal_direction:
+            score += weights['bos']
+
+        # CHOCH
+        if 'choch_detected' in bar and bar['choch_detected']:
+            score += weights['choch']
+
+        # Delta Divergence (example)
+        if 'cumulative_delta' in bar:
+            if (signal_direction == "uptrend" and bar['cumulative_delta'] < 0) or \
+               (signal_direction == "downtrend" and bar['cumulative_delta'] > 0):
+                score += weights['delta_divergence']
+
+        # Bid-Ask Imbalance (example)
+        if 'bid_ask_imbalance' in bar and abs(bar['bid_ask_imbalance']) > 500:
+            score += weights['bid_ask_imbalance']
+
+        # Cumulative Delta (example)
+        if 'cumulative_delta' in bar and abs(bar['cumulative_delta']) > 1000:
+            score += weights['cumulative_delta']
+
+        # Tick Filter (example)
+        if 'tick_volume' in bar and bar['tick_volume'] > 100:
+            score += weights['tick_filter']
+
+        # Price Near VWAP
+        if 'vwap' in bar and abs(bar['close'] - bar['vwap']) < 0.01 * bar['vwap']:
+            score += weights['price_near_vwap']
+
+        # Liquidity Zone
+        if 'vwap_upper_1' in bar and 'vwap_lower_1' in bar and \
+           bar['vwap_lower_1'] < bar['close'] < bar['vwap_upper_1']:
+            score += weights['liquidity_zone']
+
+        # Z-Score Deviation
+        if 'zscore' in bar and abs(bar['zscore']) > 2:
+            score += weights['zscore_deviation']
+
+        return score
+
+    def generate_signal_for_tf(self, trading_tf, symbol):
+        df = self.indicator_histories[symbol][trading_tf]
+        if df.empty or len(df) < 14:
+            self.logger.debug(f"Insufficient indicator history for {symbol} on {trading_tf}: {len(df)} bars")
+            return
+
+        current_time = datetime.now(pytz.UTC)
+        if not self.check_confluence_persistence(df, trading_tf, current_time):
+            self.logger.debug(f"Confluence not persistent for {symbol} on {trading_tf}")
+            return
 
         signal_direction = "uptrend" if df['close'].iloc[-1] > df['adaptive_ma'].iloc[-1] else "downtrend"
-        self.logger.debug(f"Signal direction for {symbol} on {trading_tf}: {signal_direction}")
+        score = self.calculate_confluence_score(df.iloc[-1])
+        threshold = self.thresholds.get(trading_tf, 5)
 
-        hurst = None
-        if 'daily' in self.indicator_histories[symbol] and 'hurst' in self.indicator_histories[symbol]['daily'].columns:
-            hurst = self.indicator_histories[symbol]['daily']['hurst'].iloc[-1]
-
-        trend_following = ['adaptive_moving_average', 'bos', 'choch', 'vwap_slope', 'cumulative_delta']
-        mean_reverting = ['price_near_vwap', 'liquidity_zone', 'zscore_deviation']
-
-        if hurst is not None:
-            if hurst > 0.5:
-                adjusted_weights = {k: v * 1.5 if k in trend_following else v for k, v in weights.items()}
-            elif hurst < 0.5:
-                adjusted_weights = {k: v * 1.5 if k in mean_reverting else v for k, v in weights.items()}
-            else:
-                adjusted_weights = weights
-        else:
-            adjusted_weights = weights
-
-        score = 0
-
-        higher_tf_uptrend = 0
-        higher_tf_downtrend = 0
-        for higher_tf in ['1h', '4h']:
-            if higher_tf in self.indicator_histories[symbol] and not self.indicator_histories[symbol][higher_tf].empty:
-                sma_slope = self.indicator_histories[symbol][higher_tf]['sma_slope'].iloc[-1]
-                if sma_slope > 0.0001:
-                    higher_tf_uptrend += 1
-                elif sma_slope < -0.0001:
-                    higher_tf_downtrend += 1
-
-        if signal_direction == "uptrend":
-            score += higher_tf_uptrend * 2
-        elif signal_direction == "downtrend":
-            score += higher_tf_downtrend * 2
-
-        if self.check_trend('daily', symbol) == signal_direction:
-            score += adjusted_weights.get('hurst_exponent', 3)
-        if (df['close'].iloc[-1] > df['adaptive_ma'].iloc[-1] and signal_direction == "uptrend") or \
-                (df['close'].iloc[-1] < df['adaptive_ma'].iloc[-1] and signal_direction == "downtrend"):
-            score += adjusted_weights.get('adaptive_moving_average', 2)
-        if self._check_break_of_structure(symbol):
-            score += adjusted_weights.get('bos', 2)
-        if self._check_change_of_character(symbol):
-            score += adjusted_weights.get('choch', 1)
-        if self.check_delta_divergence(symbol):
-            score += adjusted_weights.get('delta_divergence', 2)
-        if self.check_bid_ask_imbalance(symbol):
-            score += adjusted_weights.get('bid_ask_imbalance', 2)
-        if (self.real_time_data[symbol]['cumulative_delta'] > 0 and signal_direction == "uptrend") or \
-                (self.real_time_data[symbol]['cumulative_delta'] < 0 and signal_direction == "downtrend"):
-            score += adjusted_weights.get('cumulative_delta', 3)
-        if self.check_tick_filter(symbol):
-            score += adjusted_weights.get('tick_filter', 1)
-        if self.check_smt(symbol):
-            score += adjusted_weights.get('smt_confirmation', 1)
-        if self._check_price_near_vwap(symbol):
-            score += adjusted_weights.get('price_near_vwap', 2)
-        if self.check_liquidity_zone(symbol):
-            score += adjusted_weights.get('liquidity_zone', 2)
-        if self._check_zscore_deviation(symbol):
-            score += adjusted_weights.get('zscore_deviation', 2)
-        if (df['vwap_slope'].iloc[-1] > 0 and signal_direction == "uptrend") or \
-                (df['vwap_slope'].iloc[-1] < 0 and signal_direction == "downtrend"):
-            score += adjusted_weights.get('vwap_slope', 1)
-
-        oscillator = self.calculate_volume_delta_oscillator(symbol, trading_tf)
-        if (signal_direction == "uptrend" and oscillator > 0.5) or \
-                (signal_direction == "downtrend" and oscillator < -0.5):
-            score += 2
-
-        threshold = self.thresholds.get(trading_tf, 0)
-        self.logger.debug(f"Signal score for {symbol} on {trading_tf}: {score} (Threshold: {threshold})")
-
-        test_threshold = 5
-        if score >= test_threshold:
+        if score >= threshold:
             signal = {
                 'action': 'buy' if signal_direction == "uptrend" else 'sell',
-                'timeframe': trading_tf,
-                'score': score,
-                'timestamp': datetime.now(pytz.UTC).isoformat(),
-                'entry_price': df['close'].iloc[-1],
-                'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0.001,
+                'timeframe': trading_tf, 'score': score, 'timestamp': current_time.isoformat(),
+                'entry_price': df['close'].iloc[-1], 'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0.001,
                 'symbol': symbol
             }
             self.last_signals[symbol] = signal
             self.logger.info(f"Generated signal for {symbol} on {trading_tf}: {signal}")
-        else:
-            self.logger.debug(f"Signal rejected for {symbol} on {trading_tf}: Score {score} < {test_threshold}")
-
-    def check_trend(self, timeframe, symbol):
-        df = self.indicator_histories[symbol].get(timeframe, pd.DataFrame())
-        if df.empty:
-            return None
-        last_close = df['close'].iloc[-1]
-        last_ma = df['adaptive_ma'].iloc[-1]
-        if last_close > last_ma * 1.005:
-            return "uptrend"
-        elif last_close < last_ma * 0.995:
-            return "downtrend"
-        else:
-            return "sideways"
-
-    def _check_break_of_structure(self, symbol):
-        df = self.indicator_histories[symbol].get('1h', pd.DataFrame())
-        if df.empty or len(df) < 20:
-            return False
-        current_atr = df['atr'].iloc[-1]
-        avg_atr = df['avg_atr'].iloc[-1]
-        lookback = 5 if current_atr > 1.5 * avg_atr else 20
-        if len(df) < lookback:
-            return False
-        recent_highs = df['high'].iloc[-lookback:]
-        return df['high'].iloc[-1] > max(recent_highs[:-1])
-
-    def _check_change_of_character(self, symbol):
-        df = self.indicator_histories[symbol].get('1h', pd.DataFrame())
-        if df.empty or len(df) < 20:
-            return False
-        current_atr = df['atr'].iloc[-1]
-        avg_atr = df['avg_atr'].iloc[-1]
-        lookback = 5 if current_atr > 1.5 * avg_atr else 20
-        if len(df) < lookback:
-            return False
-        recent_lows = df['low'].iloc[-lookback:]
-        return df['low'].iloc[-1] < min(recent_lows[:-1])
-
-    def check_delta_divergence(self, symbol):
-        threshold = self.config.get('delta_divergence_threshold', 500)
-        recent_delta = sum(list(self.real_time_data[symbol]['delta_history'])[-100:])
-        return abs(recent_delta) > threshold
-
-    def check_tick_filter(self, symbol):
-        tick_threshold = self.config.get('tick_threshold', 800)
-        return self.real_time_data[symbol]['cumulative_tick'] > tick_threshold
-
-    def check_bid_ask_imbalance(self, symbol):
-        threshold = self.config.get('bid_ask_imbalance_threshold', 0.1)
-        return abs(self.real_time_data[symbol]['bid_ask_imbalance']) > threshold
-
-    def check_liquidity_zone(self, symbol):
-        df = self.indicator_histories[symbol].get('1h', pd.DataFrame())
-        if df.empty or len(df) < 20:
-            return False
-        current_vol = df['volume'].iloc[-1]
-        avg_vol = df['volume'].rolling(window=20).mean().iloc[-1]
-        multiplier = self.config.get('liquidity_zone_volume_multiplier', 1.5)
-        return current_vol > multiplier * avg_vol
-
-    def _check_price_near_vwap(self, symbol):
-        df = self.indicator_histories[symbol].get('1h', pd.DataFrame())
-        if df.empty:
-            return False
-        return abs(df['close'].iloc[-1] - df['vwap'].iloc[-1]) / df['vwap'].iloc[-1] < 0.005
-
-    def _check_zscore_deviation(self, symbol):
-        df = self.indicator_histories[symbol].get('1h', pd.DataFrame())
-        if df.empty:
-            return False
-        return abs(df['zscore'].iloc[-1]) > 2
-
-    def check_smt(self, symbol):
-        return self.config.get('smt_confirmation', False)
