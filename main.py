@@ -52,7 +52,7 @@ def setup_logging(log_config):
     if log_dir and not os.path.exists(log_dir):
         os.makedirs(log_dir)
     logging.basicConfig(
-        filename='trading_bot.log',  // Separate log file for bot events
+        filename='trading_bot.log',  # Separate log file for bot events
         level=getattr(logging, log_level, logging.INFO),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
@@ -68,6 +68,7 @@ def main():
     setup_logging(config.get('trade_logger', {}))
     logging.info("Starting trading bot for The 5%ers on MT5...")
 
+    bot = None  # Initialize bot as None to avoid UnboundLocalError
     try:
         # Initialize the central trading bot with configuration
         bot = CentralTradingBot(config)
@@ -85,7 +86,8 @@ def main():
             exit(1)
     except Exception as e:
         logging.error(f"Failed to start bot: {str(e)}")
-        bot.shutdown()  // Ensure MT5 connection is closed on error
+        if bot is not None:  # Only shutdown if bot was successfully created
+            bot.shutdown()  # Ensure MT5 connection is closed on error
         exit(1)
 
 

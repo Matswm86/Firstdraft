@@ -2,7 +2,7 @@ import logging
 import csv
 from datetime import datetime
 import os
-
+import pytz
 
 class TradeLogger:
     def __init__(self, config):

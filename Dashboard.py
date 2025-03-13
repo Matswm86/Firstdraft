@@ -4,7 +4,7 @@ from tkinter import ttk
 import threading
 from queue import Queue
 import time
-
+import datetime
 
 class Dashboard:
     def __init__(self, config, bot, news_queue):
@@ -79,21 +79,36 @@ class Dashboard:
         """Continuously update the dashboard with bot status and news."""
         while self.running:
             try:
-                # Update bot status
-                self.state_label.config(text=f"State: {self.bot.state}")
-                self.mode_label.config(text=f"Mode: {self.bot.mode}")
-                self.balance_label.config(text=f"Balance: ${self.bot.risk_management.current_balance:.2f}")
-                self.trades_today_label.config(text=f"Trades Today: {self.bot.risk_management.trades_today}")
-                self.daily_profit_label.config(text=f"Daily Profit: ${self.bot.risk_management.daily_profit:.2f}")
-                self.daily_loss_label.config(text=f"Daily Loss: ${self.bot.risk_management.daily_loss:.2f}")
+                # Update bot status with error handling
+                try:
+                    state = self.bot.state
+                    mode = self.bot.mode
+                    balance = self.bot.risk_management.current_balance
+                    trades_today = self.bot.risk_management.trades_today
+                    daily_profit = self.bot.risk_management.daily_profit
+                    daily_loss = self.bot.risk_management.daily_loss
+                except AttributeError as e:
+                    self.logger.error(f"Error accessing bot attributes: {str(e)}")
+                    time.sleep(1)
+                    continue
 
-                # Update positions
+                self.state_label.config(text=f"State: {state}")
+                self.mode_label.config(text=f"Mode: {mode}")
+                self.balance_label.config(text=f"Balance: ${balance:.2f}")
+                self.trades_today_label.config(text=f"Trades Today: {trades_today}")
+                self.daily_profit_label.config(text=f"Daily Profit: ${daily_profit:.2f}")
+                self.daily_loss_label.config(text=f"Daily Loss: ${daily_loss:.2f}")
+
+                # Update positions with error handling
                 self.positions_text.delete(1.0, tk.END)
-                for symbol, position in self.bot.current_positions.items():
-                    if position:
-                        pos_info = (f"{symbol}: {position['action']} @ {position['entry_price']:.5f}, "
-                                    f"Size: {position['position_size']}, Order ID: {position['order_id']}\n")
-                        self.positions_text.insert(tk.END, pos_info)
+                try:
+                    for symbol, position in self.bot.current_positions.items():
+                        if position:
+                            pos_info = (f"{symbol}: {position['action']} @ {position['entry_price']:.5f}, "
+                                        f"Size: {position['position_size']}, Order ID: {position['order_id']}\n")
+                            self.positions_text.insert(tk.END, pos_info)
+                except AttributeError as e:
+                    self.logger.error(f"Error accessing positions: {str(e)}")
 
                 # Update news from queue
                 while not self.news_queue.empty():
@@ -125,7 +140,6 @@ class Dashboard:
         self.root.quit()
         self.logger.info("Dashboard stopped")
 
-
 # Example usage (for testing)
 if __name__ == "__main__":
     from queue import Queue
@@ -135,7 +149,7 @@ if __name__ == "__main__":
     # Dummy config and bot for testing
     config = {
         "dashboard": {
-            "enable_web_dashboard": False,
+            "enable_web_dashboard": True,
             "web_dashboard_port": 5000,
             "refresh_interval": 1000
         },
@@ -148,7 +162,6 @@ if __name__ == "__main__":
             "daily_loss": 200
         }
     }
-
 
     class DummyBot:
         def __init__(self):
@@ -167,7 +180,6 @@ if __name__ == "__main__":
 
         def stop(self):
             self.state = "stopped"
-
 
     news_queue = Queue()
     bot = DummyBot()

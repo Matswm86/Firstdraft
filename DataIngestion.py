@@ -1,16 +1,18 @@
 import logging
 import pandas as pd
 import os
+import pytz
+import MetaTrader5 as mt5
 from MT5API import MT5API
 
-
 class DataIngestion:
-    def __init__(self, config):
+    def __init__(self, config, mt5_api=None):
         """
         Initialize DataIngestion with configuration for The 5%ers MT5 trading and backtesting.
 
         Args:
             config (dict): Configuration dictionary with data settings.
+            mt5_api (MT5API, optional): Instance of MT5API for live trading.
         """
         self.config = config
         self.data_dir = config.get('data_ingestion', {}).get('historical_data_path', '.')
@@ -21,20 +23,11 @@ class DataIngestion:
         self.live_mode = config['central_trading_bot']['mode'] == 'live'
         self.symbols = config['symbols']  # e.g., ["EURUSD", "GBPJPY"] for live trading
         self.logger = logging.getLogger(__name__)
-
-        # Initialize MT5API only for live mode
-        if self.live_mode:
-            self.mt5_api = MT5API(
-                config['mt5_settings']['server'],
-                config['mt5_settings']['login'],
-                config['mt5_settings']['password']
-            )
-        else:
-            self.mt5_api = None
+        self.mt5_api = mt5_api  # Use the passed MT5API instance
 
     def load_historical_data(self):
         """
-        Load historical data from CSV files for backtesting (unchanged for NASDAQ futures).
+        Load historical data from CSV files for backtesting.
 
         Returns:
             dict: A dictionary mapping (symbol, timeframe) to their corresponding DataFrames.
@@ -143,41 +136,3 @@ class DataIngestion:
         except Exception as e:
             self.logger.error(f"Failed to fetch DOM data for {symbol}: {str(e)}")
             return None
-
-
-# Example usage (for testing)
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    config = {
-        "central_trading_bot": {"mode": "live"},
-        "mt5_settings": {
-            "server": "The5ers-Server",
-            "login": "your_login",
-            "password": "your_password"
-        },
-        "symbols": ["EURUSD", "GBPJPY"],
-        "data_ingestion": {
-            "historical_data_path": "C:\\Users\\matsw\\PycharmProjects\\Firstdraft\\data",
-            "timeframe_files": {
-                "1d": "backtrader_1d.csv",
-                "4h": "backtrader_4h.csv",
-                "1h": "backtrader_1h.csv",
-                "30m": "backtrader_30m.csv",
-                "15m": "backtrader_15m.csv",
-                "5m": "backtrader_5m.csv",
-                "1m": "backtrader_1m.csv"
-            },
-            "delimiter": ",",
-            "column_names": ["datetime", "Open", "High", "Low", "Close", "Volume"]
-        },
-        "backtesting": {"symbols": ["NQ 03-25"]}
-    }
-    data_ingestion = DataIngestion(config)
-    live_data = data_ingestion.fetch_live_data("EURUSD")
-    print("Live data:", live_data)
-    ohlc_data = data_ingestion.get_ohlc("EURUSD")
-    print("OHLC data:", ohlc_data[:5] if ohlc_data else None)
-    dom_data = data_ingestion.get_dom("EURUSD")
-    print("DOM data:", dom_data)
-    if data_ingestion.mt5_api:
-        data_ingestion.mt5_api.shutdown()

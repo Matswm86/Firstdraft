@@ -1,11 +1,11 @@
 {
   "central_trading_bot": {
-    "mode": "live"  // Can be "live" or "backtest"
+    "mode": "live"
   },
   "mt5_settings": {
-    "server": "The5ers-Server",  // Replace with actual server name from The 5%ers
-    "login": "your_login",       // Replace with your MT5 account login
-    "password": "your_password"  // Replace with your MT5 account password
+    "server": "MetaQuotes-Demo",
+    "login": "90935308",
+    "password": "*h2pDjBf"
   },
   "symbols": ["EURUSD", "GBPJPY"],
   "data_ingestion": {
@@ -25,33 +25,33 @@
   "signal_generation": {
     "timeframes": ["1min", "5min", "15min", "30min", "1h", "4h", "daily"],
     "trading_timeframes": ["15min", "5min", "1min"],
-    "thresholds": {"15min": 15, "5min": 15, "1min": 18},
+    "thresholds": {"15min": 5, "5min": 5, "1min": 8},
     "max_bars": {"1min": 20160, "5min": 4032, "15min": 1344, "30min": 672, "1h": 336, "4h": 84, "daily": 14}
   },
   "risk_management": {
-    "max_drawdown": 0.04,         // 4% max drawdown per The 5%ers funded rules
-    "max_daily_loss": 0.02,       // 2% daily loss limit
-    "max_profit_per_day": 0.04,   // 4% daily profit target
-    "risk_per_trade": 0.01,       // 1% risk per trade
+    "max_drawdown": 0.04,
+    "max_daily_loss": 0.02,
+    "max_profit_per_day": 0.04,
+    "risk_per_trade": 0.01,
     "max_trades_per_day": 5,
-    "initial_balance": 100000,    // Starting capital in USD
-    "commission_per_lot": 7.0,    // $7 per standard lot, adjust per The 5%ers broker
+    "initial_balance": 100000,
+    "commission_per_lot": 7.0,
     "slippage_pips": {
-      "EURUSD": 2.0,              // 2 pips slippage for EURUSD
-      "GBPJPY": 3.0               // 3 pips slippage for GBPJPY
+      "EURUSD": 2.0,
+      "GBPJPY": 3.0
     }
   },
   "notification": {
-    "email_enabled": true,
+    "email_enabled": false,
     "email": "matswm86@yahoo.no",
     "smtp_server": "smtp.yahoo.com",
     "smtp_port": 587,
     "smtp_user": "@",
-    "smtp_password": "your_password"  // Replace with your actual SMTP password
+    "smtp_password": "your_password"
   },
   "trade_logger": {
     "trade_log_file": "logs/trades.csv",
-    "log_level": "INFO",
+    "log_level": "DEBUG",
     "real_time_log_level": "DEBUG"
   },
   "api_server": {
@@ -64,7 +64,7 @@
     ]
   },
   "dashboard": {
-    "enable_web_dashboard": false,
+    "enable_web_dashboard": true,
     "web_dashboard_port": 5000,
     "refresh_interval": 1000
   },
@@ -75,9 +75,9 @@
     "news_sources": ["NewsAPI", "Twitter"]
   },
   "backtesting": {
-    "symbols": ["NQ 03-25"],       // Kept for NASDAQ futures backtesting
-    "commission": 0.001,          // Original futures commission, unchanged
-    "slippage": 0.001,            // Original futures slippage, unchanged
+    "symbols": ["NQ 03-25"],
+    "commission": 0.001,
+    "slippage": 0.001,
     "enable_multi_asset": false
   }
 }

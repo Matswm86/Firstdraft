@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 import uvicorn
 import threading
-
+import time
 
 class APIServer:
     def __init__(self, config, bot):
