@@ -1,32 +1,131 @@
 {
   "central_trading_bot": {
-    "mode": "live"
+    "mode": "live",
+    "require_mt5": true,
+    "state_file": "data/bot_state.json",
+    "cool_down_minutes": 15,
+    "log_level": "DEBUG"
+  },
+  "modules_enabled": {
+    "SignalGenerator": true,
+    "RiskManagement": true,
+    "TradeExecution": true,
+    "MarketNewsAPI": false,
+    "MachineLearning": false,
+    "APIServer": true,
+    "Dashboard": true,
+    "Notification": true
   },
   "mt5_settings": {
     "server": "MetaQuotes-Demo",
     "login": "90935308",
-    "password": "*h2pDjBf"
+    "password": "*h2pDjBf",
+    "timeout_seconds": 60,
+    "max_retries": 3,
+    "retry_delay_seconds": 5
   },
   "symbols": ["EURUSD", "GBPJPY"],
+  "symbol_settings": {
+    "EURUSD": {
+      "point": 0.00001,
+      "pip_value_per_lot": 10.0,
+      "min_volume": 0.01,
+      "volume_step": 0.01,
+      "contract_size": 100000,
+      "typical_spread_pips": 1.0,
+      "max_spread_pips": 5.0,
+      "slippage_pips": 2.0,
+      "trading_hours": {
+        "sunday": ["22:00", "24:00"],
+        "monday": ["00:00", "24:00"],
+        "tuesday": ["00:00", "24:00"],
+        "wednesday": ["00:00", "24:00"],
+        "thursday": ["00:00", "24:00"],
+        "friday": ["00:00", "22:00"]
+      }
+    },
+    "GBPJPY": {
+      "point": 0.001,
+      "pip_value_per_lot": 8.0,
+      "min_volume": 0.01,
+      "volume_step": 0.01,
+      "contract_size": 100000,
+      "typical_spread_pips": 2.0,
+      "max_spread_pips": 8.0,
+      "slippage_pips": 3.0,
+      "trading_hours": {
+        "sunday": ["22:00", "24:00"],
+        "monday": ["00:00", "24:00"],
+        "tuesday": ["00:00", "24:00"],
+        "wednesday": ["00:00", "24:00"],
+        "thursday": ["00:00", "24:00"],
+        "friday": ["00:00", "22:00"]
+      }
+    }
+  },
   "data_ingestion": {
-    "historical_data_path": "C:\\Users\\matsw\\PycharmProjects\\Firstdraft\\data",
+    "historical_data_path": "data/historical",
+    "cache_duration_minutes": 15,
     "timeframe_files": {
-      "1d": "backtrader_1d.csv",
-      "4h": "backtrader_4h.csv",
+      "1min": "backtrader_1m.csv",
+      "5min": "backtrader_5m.csv",
+      "15min": "backtrader_15m.csv",
+      "30min": "backtrader_30m.csv",
       "1h": "backtrader_1h.csv",
-      "30m": "backtrader_30m.csv",
-      "15m": "backtrader_15m.csv",
-      "5m": "backtrader_5m.csv",
-      "1m": "backtrader_1m.csv"
+      "4h": "backtrader_4h.csv",
+      "daily": "backtrader_1d.csv"
     },
     "delimiter": ",",
-    "column_names": ["datetime", "Open", "High", "Low", "Close", "Volume"]
+    "column_names": ["datetime", "open", "high", "low", "close", "volume"],
+    "validation_enabled": true,
+    "max_cache_size_mb": 100,
+    "max_spread": {
+      "EURUSD": 7.5,
+      "GBPJPY": 12.0
+    }
   },
   "signal_generation": {
     "timeframes": ["1min", "5min", "15min", "30min", "1h", "4h", "daily"],
     "trading_timeframes": ["15min", "5min", "1min"],
-    "thresholds": {"15min": 2, "5min": 2, "1min": 3},
-    "max_bars": {"1min": 20160, "5min": 4032, "15min": 1344, "30min": 672, "1h": 336, "4h": 84, "daily": 14}
+    "thresholds": {
+      "15min": 1,
+      "5min": 1,
+      "1min": 2
+    },
+    "max_bars": {
+      "1min": 20160,
+      "5min": 4032,
+      "15min": 1344,
+      "30min": 672,
+      "1h": 336,
+      "4h": 84,
+      "daily": 14
+    },
+    "indicators": {
+      "atr_period": 14,
+      "rsi_period": 14,
+      "ma_type": "adaptive",
+      "vwap_type": "daily"
+    },
+    "confluence_weights": {
+      "hurst_exponent": 3,
+      "adaptive_moving_average": 2,
+      "bos": 2,
+      "choch": 1,
+      "delta_divergence": 2,
+      "bid_ask_imbalance": 2,
+      "cumulative_delta": 3,
+      "tick_filter": 1,
+      "price_near_vwap": 2,
+      "liquidity_zone": 2,
+      "zscore_deviation": 2,
+      "vwap_slope": 1
+    },
+    "delta_divergence_threshold": 500,
+    "tick_threshold": 800,
+    "bid_ask_imbalance_threshold": 0.1,
+    "liquidity_zone_volume_multiplier": 1.5,
+    "ad_line_bars": 20
   },
   "risk_management": {
     "max_drawdown": 0.04,
@@ -36,48 +135,100 @@
     "max_trades_per_day": 5,
     "initial_balance": 100000,
     "commission_per_lot": 7.0,
-    "slippage_pips": {
-      "EURUSD": 2.0,
-      "GBPJPY": 3.0
+    "max_correlation_exposure": 0.03,
+    "state_file": "data/risk_state.json",
+    "history_file": "logs/trade_history.json",
+    "min_risk_factor": 0.3,
+    "atr_multiple_for_sl": 2.0,
+    "atr_multiple_for_tp": 1.5,
+    "max_position_size": 10.0,
+    "correlation_matrix": {
+      "EURUSD_GBPJPY": 0.7
     }
+  },
+  "trade_execution": {
+    "default_deviation": 10,
+    "default_magic": 123456,
+    "max_retries": 3,
+    "retry_delay": 1.0,
+    "max_spread_multiplier": 1.5,
+    "max_slippage_pips": 2.0,
+    "volume_step": 0.01,
+    "order_type": "market"
   },
   "notification": {
     "email_enabled": false,
-    "email": "matswm86@yahoo.no",
-    "smtp_server": "smtp.yahoo.com",
+    "email": "ENV:EMAIL_ADDRESS",
+    "smtp_server": "ENV:SMTP_SERVER",
     "smtp_port": 587,
-    "smtp_user": "@",
-    "smtp_password": "your_password"
+    "smtp_user": "ENV:SMTP_USER",
+    "smtp_password": "ENV:SMTP_PASSWORD",
+    "telegram_enabled": false,
+    "telegram_bot_token": "ENV:TELEGRAM_TOKEN",
+    "telegram_chat_id": "ENV:TELEGRAM_CHAT_ID",
+    "notification_levels": ["error", "trade", "warning"]
   },
   "trade_logger": {
     "trade_log_file": "logs/trades.csv",
+    "log_file": "logs/trading_bot.log",
+    "error_log_file": "logs/trade_errors.csv",
+    "performance_file": "logs/performance.json",
     "log_level": "DEBUG",
-    "real_time_log_level": "DEBUG"
+    "real_time_log_level": "DEBUG",
+    "log_format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "max_log_size": 10485760,
+    "backup_count": 5,
+    "backup_dir": "logs/backups",
+    "max_log_age": 30,
+    "include_execution_time": true,
+    "include_slippage": true
   },
   "api_server": {
     "host": "127.0.0.1",
-    "port": 8080
+    "port": 8080,
+    "enable_auth": true,
+    "api_key": "ENV:API_KEY",
+    "cors_origins": ["http://localhost:3000"],
+    "max_requests_per_minute": 60
+  },
+  "market_news": {
+    "news_api_key": "ENV:NEWS_API_KEY",
+    "twitter_bearer_token": "ENV:TWITTER_BEARER_TOKEN",
+    "sentiment_thresholds": {
+      "very_negative": -0.6,
+      "negative": -0.3,
+      "neutral": 0.1,
+      "positive": 0.4,
+      "very_positive": 0.7
+    },
+    "twitter_queries": ["forex", "EURUSD", "GBPJPY", "Dollar", "Trump", "Musk", "Euro"],
+    "max_results": 10,
+    "twitter_max_results": 10,
+    "calendar_file": "data/economic_calendar.json",
+    "min_risk_factor": 0.3
   },
   "machine_learning": {
+    "model_dir": "models",
+    "load_saved_models": false,
+    "voting_method": "soft",
     "models": [
-      {"type": "random_forest", "n_estimators": 100, "max_depth": 10}
+      {"type": "random_forest", "name": "rf_model", "n_estimators": 200, "max_depth": 10},
+      {"type": "xgboost", "name": "xgb_model", "n_estimators": 100, "learning_rate": 0.05},
+      {"type": "lightgbm", "name": "lgbm_model", "n_estimators": 150}
     ]
   },
   "dashboard": {
-    "enable_web_dashboard": true,
-    "web_dashboard_port": 5000,
-    "refresh_interval": 1000
-  },
-  "market_news": {
-    "news_api_key": "your_news_api_key",
-    "twitter_bearer_token": "your_twitter_bearer_token",
-    "sentiment_threshold": 0.5,
-    "news_sources": ["NewsAPI", "Twitter"]
+    "enable_gui": false,
+    "refresh_interval": 1000,
+    "max_news_items": 100
   },
   "backtesting": {
-    "symbols": ["NQ 03-25"],
+    "symbols": ["NQ"],
     "commission": 0.001,
     "slippage": 0.001,
-    "enable_multi_asset": false
+    "enable_multi_asset": false,
+    "results_dir": "results",
+    "start_date": "2023-01-01",
+    "end_date": "2023-12-31"
   }
 }
