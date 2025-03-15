@@ -8,11 +8,19 @@ import numpy as np
 import ta.volatility as volatility
 import ta.momentum as momentum
 from typing import Dict, Optional, List, Any
-from hurst import compute_Hc
-from scipy.signal import argrelextrema
-import ta.trend as trend
+import traceback
+
+# Import specialized modules
+from MarketStructure import MarketStructure
+from OrderFlow import OrderFlow
+
 
 class SignalGenerator:
+    """
+    Signal Generator module for generating trading signals based on technical analysis.
+    Coordinates Market Structure and Order Flow analysis for high-probability setups.
+    """
+
     def __init__(self, config: Dict, mt5_api=None):
         """
         Initialize the SignalGenerator with configuration settings.
@@ -87,17 +95,23 @@ class SignalGenerator:
             'daily': mt5.TIMEFRAME_D1
         }
 
-        # Hurst exponent caching
-        self.hurst_cache = {symbol: {tf: None for tf in ['15min', '30min', '1h', '4h', 'daily']} for symbol in self.symbols}
-        self.hurst_last_update = {symbol: {tf: None for tf in ['15min', '30min', '1h', '4h', 'daily']} for symbol in self.symbols}
+        # Initialize specialized modules
+        self.market_structure = MarketStructure(config, self)
+        self.order_flow = OrderFlow(config, self)
 
-        # Initialize missing variables
+        # Historical performance tracking
+        self.signal_performance = {symbol: {'win_count': 0, 'loss_count': 0, 'total_profit': 0, 'total_loss': 0}
+                                   for symbol in self.symbols}
+
+        # Initialize core analysis parameters
         self.atr_period = 14
-        self.rsi_threshold = 70
+        self.rsi_period = 14
 
         # Load initial history if MT5API is available
         if self.mt5_api and self.config['central_trading_bot']['mode'] == 'live':
             self._load_initial_history()
+
+        self.logger.info("SignalGenerator initialized with MarketStructure and OrderFlow modules")
 
     def _validate_config(self) -> None:
         """Validate configuration parameters"""
@@ -145,11 +159,12 @@ class SignalGenerator:
                     if self.histories[symbol][tf]:
                         df = pd.DataFrame(list(self.histories[symbol][tf]))
                         if len(df) >= 14:
-                            df = self.calculate_indicators(df, tf)
+                            df = self.calculate_indicators(df)
                             self.indicator_histories[symbol][tf] = df
                             self.logger.info(f"Loaded initial history for {symbol} on {tf}: {len(df)} bars")
                 except Exception as e:
                     self.logger.error(f"Error loading history for {symbol} on {tf}: {str(e)}")
+                    self.logger.debug(traceback.format_exc())
 
     def preprocess_tick(self, raw_tick: Dict) -> Optional[Dict[str, Any]]:
         """
@@ -239,7 +254,8 @@ class SignalGenerator:
 
         return None
 
-    def _aggregate_tick(self, timeframe: str, tick_time: datetime, price: float, volume: float, symbol: str) -> Optional[Dict[str, Any]]:
+    def _aggregate_tick(self, timeframe: str, tick_time: datetime, price: float, volume: float, symbol: str) -> \
+    Optional[Dict[str, Any]]:
         """
         Aggregate tick data into OHLC bars.
 
@@ -278,8 +294,10 @@ class SignalGenerator:
                 }
                 if completed_bar:
                     self.histories[symbol][timeframe].append(completed_bar)
-                self.logger.debug(f"Aggregated bar for {symbol} on {timeframe}: {completed_bar}")
-                return completed_bar
+                    self.logger.debug(f"Aggregated bar for {symbol} on {timeframe}: {completed_bar}")
+                    return completed_bar
+                else:
+                    return None
             else:
                 current_bar['high'] = max(current_bar['high'], price)
                 current_bar['low'] = min(current_bar['low'], price)
@@ -309,7 +327,7 @@ class SignalGenerator:
 
             df = pd.DataFrame(bars_list)
             if len(df) >= 14:
-                df = self.calculate_indicators(df, timeframe)
+                df = self.calculate_indicators(df)
                 self.indicator_histories[symbol][timeframe] = df
                 self.logger.debug(f"Updated indicator history for {symbol} on {timeframe}: {len(df)} bars")
         except Exception as e:
@@ -358,8 +376,8 @@ class SignalGenerator:
                 rtd['bid_ask_imbalance'] = (bid - ask) / (bid + ask)
 
             rtd['composite_breadth_score'] = (
-                rtd['composite_breadth_score'] * 0.9 +
-                rtd['tick'] * 0.1
+                    rtd['composite_breadth_score'] * 0.9 +
+                    rtd['tick'] * 0.1
             )
 
             rtd['last_price'] = price
@@ -368,13 +386,12 @@ class SignalGenerator:
         except Exception as e:
             self.logger.error(f"Error updating real-time data: {str(e)}")
 
-    def calculate_indicators(self, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculate technical indicators for a DataFrame of price data.
+        Calculate basic technical indicators for a DataFrame of price data.
 
         Args:
             df (pd.DataFrame): DataFrame with OHLC data
-            timeframe (str): Timeframe string
 
         Returns:
             pd.DataFrame: DataFrame with added indicators
@@ -386,43 +403,44 @@ class SignalGenerator:
                     self.logger.error(f"Missing required column for indicators: {col}")
                     return df
 
-            # Use dynamic atr_period
+            # Calculate ATR
             df['atr'] = volatility.AverageTrueRange(
                 high=df['high'], low=df['low'], close=df['close'],
                 window=self.atr_period, fillna=True
             ).average_true_range().fillna(0.001)
 
+            # Calculate average ATR
+            df['avg_atr'] = df['atr'].rolling(window=20, min_periods=1).mean()
+
+            # Calculate adaptive moving average
             lookback = 30
             if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]):
                 lookback = max(1, min(100, int(df['atr'].iloc[-1] * 1000)))
-
             df['adaptive_ma'] = df['close'].rolling(window=lookback, min_periods=1).mean()
 
-            df['rsi'] = momentum.RSIIndicator(df['close'], window=14).rsi().fillna(50)
+            # Calculate RSI
+            df['rsi'] = momentum.RSIIndicator(df['close'], window=self.rsi_period).rsi().fillna(50)
 
+            # Calculate VWAP
             if 'volume' in df.columns and df['volume'].sum() > 0:
                 df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
             else:
                 df['vwap'] = df['close']
 
+            # Calculate VWAP slope
             if 'vwap' in df.columns:
                 df['vwap_slope'] = df['vwap'].diff(periods=5) / 5
 
+            # Calculate Z-score
             mean = df['close'].rolling(window=20, min_periods=1).mean()
             std = df['close'].rolling(window=20, min_periods=1).std()
             df['zscore'] = np.where(std > 0, (df['close'] - mean) / std, 0)
 
-            # Hurst calculation (only for key timeframes)
-            if timeframe in ['15min', '30min', '1h', '4h', 'daily'] and len(df) > 100:
-                H, _, _ = compute_Hc(df['close'].values, kind='price')
-                df['hurst'] = H
-
+            # Calculate slope of adaptive MA
             if 'adaptive_ma' in df.columns:
                 df['sma_slope'] = (df['adaptive_ma'] - df['adaptive_ma'].shift(5)) / 5
 
-            if 'atr' in df.columns:
-                df['avg_atr'] = df['atr'].rolling(window=20, min_periods=1).mean()
-
+            # Calculate VWAP bands
             if 'vwap' in df.columns:
                 df['vwap_std'] = (df['close'] - df['vwap']).rolling(window=20, min_periods=1).std()
                 df['vwap_upper_1'] = df['vwap'] + df['vwap_std']
@@ -430,468 +448,17 @@ class SignalGenerator:
                 df['vwap_upper_2'] = df['vwap'] + 2 * df['vwap_std']
                 df['vwap_lower_2'] = df['vwap'] - 2 * df['vwap_std']
 
-            self.logger.debug(f"Calculated indicators for {timeframe}: close={df['close'].iloc[-1]}, adaptive_ma={df['adaptive_ma'].iloc[-1]}, sma_slope={df['sma_slope'].iloc[-1] if 'sma_slope' in df.columns else 'N/A'}")
+            self.logger.debug(
+                f"Calculated indicators: close={df['close'].iloc[-1]}, adaptive_ma={df['adaptive_ma'].iloc[-1]}")
             return df
         except Exception as e:
             self.logger.error(f"Error calculating indicators: {str(e)}")
             return df
 
-    def compute_hurst(self, symbol: str) -> Dict[str, float]:
-        """Compute Hurst exponent dynamically with caching for key timeframes."""
-        timeframes = ['15min', '30min', '1h', '4h', 'daily']
-        hurst_values = {}
-        current_time = datetime.now(pytz.UTC)
-        for tf in timeframes:
-            # Check cache and update interval (e.g., 5 minutes)
-            last_update = self.hurst_last_update[symbol][tf]
-            if last_update and (current_time - last_update).total_seconds() < 300:  # 5 minutes
-                hurst_values[tf] = self.hurst_cache[symbol][tf]
-                continue
-
-            df = self.indicator_histories.get(symbol, {}).get(tf, pd.DataFrame())
-            if df.empty or len(df) < 50:  # Reduced window size for performance
-                continue
-            series = df['close'].tail(50)  # Smaller window for performance
-            H, _, _ = compute_Hc(series, kind='price')
-            hurst_values[tf] = H
-            self.hurst_cache[symbol][tf] = H
-            self.hurst_last_update[symbol][tf] = current_time
-        return hurst_values
-
-    def check_confluence_persistence(self, df: pd.DataFrame, timeframe: str, current_time: datetime) -> bool:
-        """
-        Check if signal confluence persists across multiple bars, enhanced with Hurst.
-
-        Args:
-            df (pd.DataFrame): DataFrame with indicator data
-            timeframe (str): Timeframe string
-            current_time (datetime): Current tick time from MT5
-
-        Returns:
-            bool: True if confluence persists, False otherwise
-        """
-        try:
-            required_bars = 3
-            min_duration = timedelta(minutes=2)
-
-            if len(df) < required_bars + 1:
-                self.logger.debug(f"Insufficient bars for {timeframe}: {len(df)} < {required_bars + 1}")
-                return False
-
-            if 'timestamp' not in df.columns:
-                self.logger.error("DataFrame missing timestamp column")
-                return False
-
-            latest_bar_time = pd.Timestamp(df['timestamp'].iloc[-2])
-            if latest_bar_time.tzinfo is None:
-                latest_bar_time = latest_bar_time.tz_localize(pytz.UTC)
-
-            for i in range(-2, -required_bars - 1, -1):
-                score = self.calculate_confluence_score(df.iloc[i], symbol=df['symbol'].iloc[0])
-                threshold = self.thresholds.get(timeframe, 1)
-                if score < threshold:
-                    self.logger.debug(f"Confluence score below threshold for {timeframe}: {score} < {threshold}")
-                    return False
-
-            earliest_bar_time = pd.Timestamp(df['timestamp'].iloc[-required_bars - 1])
-            if earliest_bar_time.tzinfo is None:
-                earliest_bar_time = earliest_bar_time.tz_localize(pytz.UTC)
-
-            duration = (current_time - earliest_bar_time).total_seconds()
-            min_required_duration = min_duration.total_seconds()
-            if duration < min_required_duration:
-                self.logger.debug(f"Confluence duration too short for {timeframe}: {duration} < {min_required_duration}")
-                return False
-
-            # Enhanced: Hurst check with caching
-            symbol = df['symbol'].iloc[0]
-            hurst_values = self.compute_hurst(symbol)
-            if hurst_values and all(h > 0.5 for h in hurst_values.values()):
-                self.logger.debug(f"Hurst confluence passed for {timeframe}: {hurst_values}")
-            else:
-                self.logger.debug(f"Hurst confluence failed for {timeframe}: {hurst_values}")
-                return False
-
-            self.logger.debug(f"Confluence persists for {timeframe}, duration={duration}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error checking confluence persistence: {str(e)}")
-            return False
-
-    def detect_williams_fractal(self, data: pd.DataFrame, direction: str = 'high') -> List[int]:
-        """Detect Williams' fractal patterns (5-bar structure)."""
-        order = 2  # Two bars on either side
-        if direction == 'high':
-            return list(argrelextrema(data['high'].values, np.greater, order=order)[0])
-        return list(argrelextrema(data['low'].values, np.less, order=order)[0])
-
-    def calculate_alligator_mas(self, data: pd.DataFrame) -> Dict[str, pd.Series]:
-        """Calculate Alligator Moving Averages (Jaw, Teeth, Lips)."""
-        return {
-            'jaw': trend.SMAIndicator(data['close'], window=13).sma_indicator().shift(8),
-            'teeth': trend.SMAIndicator(data['close'], window=8).sma_indicator().shift(5),
-            'lips': trend.SMAIndicator(data['close'], window=5).sma_indicator().shift(3)
-        }
-
-    def _check_break_of_structure(self, symbol: str) -> bool:
-        """
-        Check for a break of market structure, enhanced with fractals and Alligator.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if break of structure detected, False otherwise
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or len(df) < 20 or 'high' not in df.columns:
-                return False
-
-            current_atr = df['atr'].iloc[-1] if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else 0
-            avg_atr = df['avg_atr'].iloc[-1] if 'avg_atr' in df.columns and not pd.isna(df['avg_atr'].iloc[-1]) else 0
-
-            lookback = 20 if current_atr == 0 or avg_atr == 0 else (5 if current_atr > 1.5 * avg_atr else 20)
-            recent_highs = df['high'].iloc[-lookback:]
-            basic_bos = df['high'].iloc[-1] > recent_highs[:-1].max()
-
-            # Enhanced: Fractal and Alligator confirmation
-            fractal_highs = self.detect_williams_fractal(df)
-            if fractal_highs and fractal_highs[-1] < len(df) - 1:
-                fractal_bos = df['high'].iloc[-1] > df['high'].iloc[fractal_highs[-1]]
-            else:
-                fractal_bos = False
-
-            alligator = self.calculate_alligator_mas(df)
-            price_above_jaw = df['close'].iloc[-1] > alligator['jaw'].iloc[-1]
-
-            return basic_bos and (fractal_bos or price_above_jaw)
-        except Exception as e:
-            self.logger.error(f"Error checking break of structure for {symbol}: {str(e)}")
-            return False
-
-    def _check_change_of_character(self, symbol: str) -> bool:
-        """
-        Check for a change of market character, enhanced with fractals and Alligator.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if change of character detected, False otherwise
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or len(df) < 20 or 'low' not in df.columns:
-                return False
-
-            current_atr = df['atr'].iloc[-1] if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else 0
-            avg_atr = df['avg_atr'].iloc[-1] if 'avg_atr' in df.columns and not pd.isna(df['avg_atr'].iloc[-1]) else 0
-
-            lookback = 20 if current_atr == 0 or avg_atr == 0 else (5 if current_atr > 1.5 * avg_atr else 20)
-            recent_lows = df['low'].iloc[-lookback:]
-            basic_choch = df['low'].iloc[-1] < recent_lows[:-1].min()
-
-            # Enhanced: Fractal and Alligator confirmation
-            fractal_lows = self.detect_williams_fractal(df, direction='low')
-            if fractal_lows and fractal_lows[-1] < len(df) - 1:
-                fractal_choch = df['low'].iloc[-1] < df['low'].iloc[fractal_lows[-1]] - current_atr * 0.5
-            else:
-                fractal_choch = False
-
-            alligator = self.calculate_alligator_mas(df)
-            price_below_lips = df['close'].iloc[-1] < alligator['lips'].iloc[-1]
-
-            return basic_choch and (fractal_choch or price_below_lips)
-        except Exception as e:
-            self.logger.error(f"Error checking change of character for {symbol}: {str(e)}")
-            return False
-
-    def check_bid_ask_imbalance(self, symbol: str) -> bool:
-        """
-        Check for bid-ask imbalance with dynamic threshold.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if imbalance detected, False otherwise
-        """
-        try:
-            rtd = self.real_time_data.get(symbol)
-            if not rtd:
-                return False
-
-            imbalance = rtd['bid_ask_imbalance']
-            delta_history = list(rtd['delta_history'])
-            if len(delta_history) < 20:
-                return False
-
-            rolling_avg = np.mean([abs(d) for d in delta_history[-20:]])
-            dynamic_threshold = max(self.config.get('bid_ask_imbalance_threshold', 0.1), rolling_avg * 0.1)
-            return abs(imbalance) > dynamic_threshold
-        except Exception as e:
-            self.logger.error(f"Error checking bid-ask imbalance for {symbol}: {str(e)}")
-            return False
-
-    def check_delta_divergence(self, symbol: str) -> bool:
-        """
-        Check for delta divergence with dynamic threshold.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if delta divergence detected, False otherwise
-        """
-        try:
-            rtd = self.real_time_data.get(symbol)
-            if not rtd or not rtd['delta_history']:
-                return False
-
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty:
-                return False
-
-            atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0.001
-            threshold = max(self.config.get('delta_divergence_threshold', 500), atr * 1000)
-            recent_delta = sum(rtd['delta_history'][-min(100, len(rtd['delta_history'])):])
-            price_change = df['close'].iloc[-1] - df['close'].iloc[-5] if len(df) >= 5 else 0
-
-            return abs(recent_delta) > threshold and abs(price_change) < atr * 0.5
-        except Exception as e:
-            self.logger.error(f"Error checking delta divergence for {symbol}: {str(e)}")
-            return False
-
-    def check_liquidity_zone(self, symbol: str) -> bool:
-        """
-        Check if price is in a liquidity zone, enhanced with price stagnation.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if in liquidity zone, False otherwise
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or len(df) < 20 or 'volume' not in df.columns:
-                return False
-
-            current_vol = df['volume'].iloc[-1]
-            avg_vol = df['volume'].rolling(window=min(20, len(df))).mean().iloc[-1]
-            if avg_vol == 0:
-                return False
-
-            multiplier = self.config.get('liquidity_zone_volume_multiplier', 1.5)
-            volume_condition = current_vol > multiplier * avg_vol
-
-            # Enhanced: Price stagnation and VWAP deviation
-            atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0.001
-            price_stagnation = abs(df['close'].iloc[-1] - df['close'].iloc[-5]) < atr * 0.5 if len(df) >= 5 else False
-            vwap_deviation = abs(df['close'].iloc[-1] - df['vwap'].iloc[-1]) < df['vwap_std'].iloc[-1] if 'vwap_std' in df.columns else True
-
-            return volume_condition and price_stagnation and vwap_deviation
-        except Exception as e:
-            self.logger.error(f"Error checking liquidity zone for {symbol}: {str(e)}")
-            return False
-
-    def check_effort_vs_result(self, symbol: str) -> bool:
-        """Filter signals where high volume doesn't lead to price movement."""
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or len(df) < 5:
-                return True  # Default to True if insufficient data
-
-            effort = df['volume'].iloc[-1] > df['volume'].rolling(window=20).mean().iloc[-1] * 1.5
-            result = abs(df['close'].iloc[-1] - df['close'].iloc[-5]) < df['atr'].iloc[-1]
-            return not (effort and result)
-        except Exception as e:
-            self.logger.error(f"Error checking effort vs result for {symbol}: {str(e)}")
-            return True
-
-    def _check_multi_tf_trend_alignment(self, symbol: str, trading_tf: str) -> bool:
-        """
-        Check if the trend is aligned across multiple timeframes, enhanced with VWAP.
-
-        Args:
-            symbol (str): Symbol to check
-            trading_tf (str): Timeframe for which the signal is being generated
-
-        Returns:
-            bool: True if trend is aligned, False otherwise
-        """
-        try:
-            alignment_tfs = ['1min', '5min', '15min'] if trading_tf == '1min' else ['5min', '15min', '30min']
-            if trading_tf not in alignment_tfs:
-                alignment_tfs.append(trading_tf)
-
-            trend_direction = None
-            for tf in alignment_tfs:
-                df = self.indicator_histories.get(symbol, {}).get(tf, pd.DataFrame())
-                if df.empty:
-                    return False
-                trend = self.check_trend(tf, symbol)
-                if trend is None:
-                    return False
-                if trend_direction is None:
-                    trend_direction = trend
-                elif trend != trend_direction:
-                    return False
-
-                # Enhanced: VWAP slope alignment
-                if 'vwap_slope' in df.columns:
-                    vwap_slope = df['vwap_slope'].iloc[-1]
-                    if (trend_direction == "uptrend" and vwap_slope <= 0) or (trend_direction == "downtrend" and vwap_slope >= 0):
-                        return False
-
-            return True
-        except Exception as e:
-            self.logger.error(f"Error checking multi-timeframe trend alignment for {symbol}: {str(e)}")
-            return False
-
-    def check_supply_demand_zone(self, symbol: str) -> bool:
-        """Detect supply/demand zones based on volume clusters and price rejection."""
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or len(df) < 50:
-                return False
-
-            volume_cluster = df['volume'].iloc[-1] > np.percentile(df['volume'].iloc[-50:], 90)
-            atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0.001
-            rejection = abs(df['close'].iloc[-1] - df['high'].iloc[-1]) < atr * 0.2 or abs(df['close'].iloc[-1] - df['low'].iloc[-1]) < atr * 0.2
-            return volume_cluster and rejection
-        except Exception as e:
-            self.logger.error(f"Error checking supply/demand zone for {symbol}: {str(e)}")
-            return False
-
-    def detect_swing_points(self, symbol: str, timeframe: str = '1h', direction: str = 'high') -> List[int]:
-        """Detect swing points with ATR-adjusted window and volume confirmation."""
-        try:
-            df = self.indicator_histories.get(symbol, {}).get(timeframe, pd.DataFrame())
-            if df.empty or len(df) < 20:
-                return []
-
-            atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0.001
-            window = max(5, min(20, int(atr / df['close'].iloc[-1] * 100)))
-            if direction == 'high':
-                highs = list(argrelextrema(df['high'].values, np.greater, order=window)[0])
-                return [h for h in highs if df['volume'].iloc[h] > df['volume'].mean()]
-            else:
-                lows = list(argrelextrema(df['low'].values, np.less, order=window)[0])
-                return [l for l in lows if df['volume'].iloc[l] > df['volume'].mean()]
-        except Exception as e:
-            self.logger.error(f"Error detecting swing points for {symbol}: {str(e)}")
-            return []
-
-    def update_parameters(self, symbol: str) -> None:
-        """Dynamically adjust ATR period and thresholds based on volatility."""
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty:
-                return
-
-            volatility = df['close'].pct_change().std()
-            self.atr_period = max(10, min(20, int(14 * (1 + volatility * 10))))
-            rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
-            self.rsi_threshold = 70 if rsi > 50 else 30
-            self.logger.debug(f"Updated parameters for {symbol}: ATR Period={self.atr_period}, RSI Threshold={self.rsi_threshold}")
-        except Exception as e:
-            self.logger.error(f"Error updating parameters for {symbol}: {str(e)}")
-
-    def estimate_slippage(self, symbol: str, order_size: float = 1.0) -> float:
-        """Estimate slippage based on order size and market depth."""
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty:
-                return 0.0
-
-            avg_volume = df['volume'].iloc[-20:].mean()
-            impact = order_size / avg_volume * 0.01 if avg_volume > 0 else 0
-            atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0.001
-            return atr * impact
-        except Exception as e:
-            self.logger.error(f"Error estimating slippage for {symbol}: {str(e)}")
-            return 0.0
-
-    def calculate_confluence_score(self, bar: pd.Series, symbol: str) -> int:
-        """
-        Calculate signal confluence score for a bar, enhanced with new checks.
-
-        Args:
-            bar (pd.Series): Bar data with indicators
-            symbol (str): Symbol for real-time checks
-
-        Returns:
-            int: Confluence score
-        """
-        try:
-            score = 0
-            weights = self.config.get('confluence_weights', {
-                'hurst_exponent': 3,
-                'adaptive_moving_average': 2,
-                'bos': 2,
-                'choch': 1,
-                'delta_divergence': 2,
-                'bid_ask_imbalance': 2,
-                'cumulative_delta': 3,
-                'tick_filter': 1,
-                'price_near_vwap': 2,
-                'liquidity_zone': 2,
-                'zscore_deviation': 2,
-                'vwap_slope': 1,
-                'supply_demand_zone': 2
-            })
-
-            required_columns = ['close', 'adaptive_ma', 'sma_slope', 'vwap_slope']
-            for col in required_columns:
-                if col not in bar or pd.isna(bar[col]):
-                    self.logger.warning(f"Missing or NaN required column for confluence score: {col}")
-                    return 0
-
-            signal_direction = "uptrend" if bar['close'] > bar['adaptive_ma'] else "downtrend"
-            sma_slope = bar['sma_slope']
-            vwap_slope = bar['vwap_slope']
-
-            if signal_direction == "uptrend" and sma_slope > 0.00002:
-                score += weights.get('adaptive_moving_average', 2)
-            elif signal_direction == "downtrend" and sma_slope < -0.00002:
-                score += weights.get('adaptive_moving_average', 2)
-
-            if not pd.isna(vwap_slope):
-                if vwap_slope > 0 and signal_direction == "uptrend":
-                    score += weights.get('vwap_slope', 1)
-                elif vwap_slope < 0 and signal_direction == "downtrend":
-                    score += weights.get('vwap_slope', 1)
-
-            if self._check_break_of_structure(symbol):
-                score += weights.get('bos', 2)
-            if self._check_change_of_character(symbol):
-                score += weights.get('choch', 1)
-            if self.check_delta_divergence(symbol):
-                score += weights.get('delta_divergence', 2)
-            if self.check_bid_ask_imbalance(symbol):
-                score += weights.get('bid_ask_imbalance', 2)
-            if self.check_liquidity_zone(symbol):
-                score += weights.get('liquidity_zone', 2)
-            if self._check_price_near_vwap(symbol):
-                score += weights.get('price_near_vwap', 2)
-            if self._check_zscore_deviation(symbol):
-                score += weights.get('zscore_deviation', 2)
-            if self.check_supply_demand_zone(symbol):
-                score += weights.get('supply_demand_zone', 2)
-            if self.check_tick_filter(symbol):
-                score += weights.get('tick_filter', 1)
-
-            self.logger.debug(f"Confluence score for {symbol}: {score}")
-            return score
-        except Exception as e:
-            self.logger.error(f"Error calculating confluence score: {str(e)}")
-            return 0
-
     def generate_signal_for_tf(self, trading_tf: str, symbol: str, current_time: datetime) -> Optional[Dict[str, Any]]:
         """
-        Generate trading signal for a specific timeframe, enhanced with new checks.
+        Generate trading signal for a specific timeframe by combining
+        market structure and order flow analysis.
 
         Args:
             trading_tf (str): Timeframe to generate signal for
@@ -902,6 +469,7 @@ class SignalGenerator:
             Optional[Dict[str, Any]]: Generated signal if applicable, None otherwise
         """
         try:
+            # Check for minimum data requirements
             rtd = self.real_time_data.get(symbol)
             if not rtd or rtd['last_price'] is None:
                 self.logger.debug(f"No real-time data for {symbol}")
@@ -909,204 +477,304 @@ class SignalGenerator:
 
             df = self.indicator_histories.get(symbol, {}).get(trading_tf)
             if df is None or df.empty or len(df) < 14:
-                self.logger.debug(f"Insufficient data for {symbol} on {trading_tf}: {len(df) if df is not None else 'None'} bars")
+                self.logger.debug(
+                    f"Insufficient data for {symbol} on {trading_tf}: {len(df) if df is not None else 'None'} bars")
                 return None
 
-            # Enhanced: Dynamic parameter updates
-            self.update_parameters(symbol)
+            # Get market structure analysis
+            structure_analysis = self.market_structure.analyze(symbol, trading_tf, df, current_time)
 
-            if not self._check_multi_tf_trend_alignment(symbol, trading_tf):
-                self.logger.debug(f"Multi-timeframe trend alignment failed for {symbol} on {trading_tf}")
+            # If structure analysis is invalid, no signal is generated
+            if not structure_analysis.get('valid', False):
+                self.logger.debug(f"Invalid market structure analysis for {symbol} on {trading_tf}")
                 return None
 
-            if not self.check_confluence_persistence(df, trading_tf, current_time):
-                self.logger.debug(f"Confluence persistence failed for {symbol} on {trading_tf}")
+            # Get order flow analysis
+            flow_analysis = self.order_flow.analyze(symbol, trading_tf, df, rtd)
+
+            # If order flow analysis is invalid, no signal is generated
+            if not flow_analysis.get('valid', False):
+                self.logger.debug(f"Invalid order flow analysis for {symbol} on {trading_tf}")
                 return None
 
-            # Enhanced: Effort vs. result check
-            if not self.check_effort_vs_result(symbol):
-                self.logger.debug(f"Effort vs. result check failed for {symbol}")
+            # Combine analyses for signal decision
+            signal_decision = self._evaluate_combined_analysis(
+                symbol, trading_tf, structure_analysis, flow_analysis
+            )
+
+            if not signal_decision['generate_signal']:
+                self.logger.debug(f"Signal criteria not met for {symbol} on {trading_tf}: {signal_decision['reason']}")
                 return None
 
-            signal_direction = "uptrend" if df['close'].iloc[-1] > df['adaptive_ma'].iloc[-1] else "downtrend"
-            score = self.calculate_confluence_score(df.iloc[-1], symbol)
-            threshold = self.thresholds.get(trading_tf, 1)
-            threshold_source = "config" if trading_tf in self.thresholds else "default"
-            self.logger.debug(f"Signal check for {symbol} on {trading_tf}: score={score}, threshold={threshold} (from {threshold_source}), direction={signal_direction}")
-            if score >= threshold:
-                entry_price = df['close'].iloc[-1]
-                slippage = self.estimate_slippage(symbol)
-                signal = {
-                    'action': 'buy' if signal_direction == "uptrend" else 'sell',
-                    'timeframe': trading_tf,
-                    'score': float(score),
-                    'timestamp': current_time.isoformat(),
-                    'entry_price': float(entry_price + slippage if signal_direction == "uptrend" else entry_price - slippage),
-                    'atr': float(df['atr'].iloc[-1]) if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else 0.001,
-                    'symbol': symbol
-                }
-                self.logger.info(f"Generated signal for {symbol} on {trading_tf}: {signal}")
-                return signal
-            return None
+            # Create signal with combined parameters
+            entry_price = df['close'].iloc[-1]
+            signal = self._construct_signal(
+                symbol, trading_tf, current_time, entry_price,
+                structure_analysis, flow_analysis, signal_decision
+            )
+
+            self.logger.info(
+                f"Generated signal for {symbol} on {trading_tf}: {signal['action']} with score {signal['score']}")
+            return signal
+
         except Exception as e:
             self.logger.error(f"Error generating signal for {symbol} on {trading_tf}: {str(e)}")
+            self.logger.debug(traceback.format_exc())
             return None
 
-    def calculate_ad_line(self, df: pd.DataFrame, bars: int) -> List[float]:
+    def _evaluate_combined_analysis(self, symbol: str, timeframe: str,
+                                    structure_analysis: Dict, flow_analysis: Dict) -> Dict:
         """
-        Calculate Accumulation/Distribution Line.
+        Evaluate combined market structure and order flow analysis for signal decision.
 
         Args:
-            df (pd.DataFrame): DataFrame with OHLC data
-            bars (int): Number of bars to include
+            symbol (str): Symbol being analyzed
+            timeframe (str): Timeframe being analyzed
+            structure_analysis (Dict): Market structure analysis results
+            flow_analysis (Dict): Order flow analysis results
 
         Returns:
-            List[float]: A/D line values
+            Dict: Signal decision with reason and direction
         """
         try:
-            ad = [0] * len(df)
-            for i in range(1, len(df)):
-                if i < bars:
-                    ad[i] = ad[i - 1]
-                else:
-                    high = df['high'].iloc[i]
-                    low = df['low'].iloc[i]
-                    close = df['close'].iloc[i]
-                    volume = df['volume'].iloc[i]
-                    if high == low:
-                        mf = 0
-                    else:
-                        mf = ((close - low) - (high - close)) / (high - low)
-                    ad[i] = ad[i - 1] + mf * volume
-            return ad
-        except Exception as e:
-            self.logger.error(f"Error calculating A/D line: {str(e)}")
-            return [0] * len(df)
+            # Get signal direction from market structure
+            # Default to None if no clear direction
+            direction = structure_analysis.get('direction', None)
 
-    def calculate_volume_delta_oscillator(self, symbol: str, tf: str, window: int = 20) -> float:
-        """
-        Calculate Volume Delta Oscillator.
+            # Get scores from both analyses
+            structure_score = structure_analysis.get('structure_score', 0)
+            flow_score = flow_analysis.get('flow_score', 0)
 
-        Args:
-            symbol (str): Symbol to calculate for
-            tf (str): Timeframe string
-            window (int): Lookback window
+            # Calculate combined score (weighted sum)
+            # Default weights: 60% structure, 40% order flow
+            structure_weight = self.config.get('structure_weight', 0.6)
+            flow_weight = self.config.get('flow_weight', 0.4)
 
-        Returns:
-            float: Oscillator value
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get(tf, pd.DataFrame())
-            if df.empty or len(df) < window:
-                return 0
+            combined_score = (structure_score * structure_weight) + (flow_score * flow_weight)
 
-            delta = df['close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0)) * df['volume']
-            actual_window = min(window, len(df))
-            cumulative_delta = delta.rolling(window=actual_window).sum()
-            total_volume = df['volume'].rolling(window=actual_window).sum()
+            # Get threshold for this timeframe
+            threshold = self.thresholds.get(timeframe, 5)
 
-            if total_volume.iloc[-1] > 0:
-                oscillator = cumulative_delta / total_volume
-                return float(oscillator.iloc[-1])
-            return 0
-        except Exception as e:
-            self.logger.error(f"Error calculating volume delta oscillator: {str(e)}")
-            return 0
+            # Check if order flow confirms structure direction
+            flow_direction = flow_analysis.get('direction', 'neutral')
+            directional_agreement = (
+                    (direction == 'uptrend' and flow_direction == 'up') or
+                    (direction == 'downtrend' and flow_direction == 'down') or
+                    (flow_direction == 'neutral')
+            )
 
-    def check_trend(self, timeframe: str, symbol: str) -> Optional[str]:
-        """
-        Check the current trend for a symbol on a timeframe.
+            # Initial decision (assumes no signal)
+            decision = {
+                'generate_signal': False,
+                'reason': 'Unknown',
+                'direction': direction,
+                'action': 'buy' if direction == 'uptrend' else 'sell' if direction == 'downtrend' else None,
+                'combined_score': combined_score
+            }
 
-        Args:
-            timeframe (str): Timeframe to check
-            symbol (str): Symbol to check
-
-        Returns:
-            Optional[str]: "uptrend", "downtrend", "sideways", or None if data unavailable
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get(timeframe, pd.DataFrame())
-            if df.empty or 'close' not in df.columns or 'adaptive_ma' not in df.columns:
-                return None
-
-            last_close = df['close'].iloc[-1]
-            last_ma = df['adaptive_ma'].iloc[-1]
-
-            if last_close > last_ma * 1.005:
-                return "uptrend"
-            elif last_close < last_ma * 0.995:
-                return "downtrend"
+            # Apply decision logic
+            if not direction or direction == 'sideways':
+                decision['reason'] = 'No clear trend direction'
+            elif not directional_agreement:
+                decision['reason'] = f'Order flow ({flow_direction}) contradicts price direction ({direction})'
+            elif combined_score < threshold:
+                decision['reason'] = f'Combined score ({combined_score:.2f}) below threshold ({threshold})'
             else:
-                return "sideways"
-        except Exception as e:
-            self.logger.error(f"Error checking trend for {symbol} on {timeframe}: {str(e)}")
-            return None
+                # All criteria met, generate signal
+                decision['generate_signal'] = True
+                decision['reason'] = f'Strong {direction} with confirming order flow'
 
-    def check_tick_filter(self, symbol: str) -> bool:
+            return decision
+
+        except Exception as e:
+            self.logger.error(f"Error evaluating combined analysis: {str(e)}")
+            return {'generate_signal': False, 'reason': f'Error: {str(e)}'}
+
+    def _construct_signal(self, symbol: str, timeframe: str, current_time: datetime,
+                          entry_price: float, structure_analysis: Dict,
+                          flow_analysis: Dict, signal_decision: Dict) -> Dict[str, Any]:
         """
-        Check tick filter for trading signal.
+        Construct a complete trading signal from analysis components.
 
         Args:
-            symbol (str): Symbol to check
+            symbol (str): Symbol to trade
+            timeframe (str): Signal timeframe
+            current_time (datetime): Current market time
+            entry_price (float): Entry price for the signal
+            structure_analysis (Dict): Market structure analysis
+            flow_analysis (Dict): Order flow analysis
+            signal_decision (Dict): Combined decision logic results
 
         Returns:
-            bool: True if tick filter triggered, False otherwise
+            Dict[str, Any]: Complete trading signal
         """
         try:
-            tick_threshold = self.config.get('tick_threshold', 800)
+            # Get ATR for volatility calculations
+            df = self.indicator_histories.get(symbol, {}).get(timeframe)
+            atr = df['atr'].iloc[-1] if 'atr' in df.columns and not pd.isna(df['atr'].iloc[-1]) else 0.001
 
+            # Determine action from decision
+            action = signal_decision['action']
+
+            # Get optimal stop loss and take profit levels
+            sl_tp = structure_analysis.get('optimal_levels', {})
+            stop_loss = sl_tp.get('stop_loss')
+            take_profit = sl_tp.get('take_profit')
+
+            # If structure analysis didn't provide levels, use default ATR-based calculation
+            if stop_loss is None or take_profit is None:
+                if action == 'buy':
+                    stop_loss = entry_price - (atr * 2)
+                    take_profit = entry_price + (atr * 3)
+                else:  # 'sell'
+                    stop_loss = entry_price + (atr * 2)
+                    take_profit = entry_price - (atr * 3)
+
+            # Calculate risk-reward ratio
+            if action == 'buy':
+                risk = entry_price - stop_loss
+                reward = take_profit - entry_price
+            else:  # 'sell'
+                risk = stop_loss - entry_price
+                reward = entry_price - take_profit
+
+            risk_reward_ratio = reward / risk if risk > 0 else 0
+
+            # Create comprehensive signal
+            signal = {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'action': action,
+                'entry_price': float(entry_price),
+                'stop_loss': float(stop_loss),
+                'take_profit': float(take_profit),
+                'timestamp': current_time.isoformat(),
+                'score': float(signal_decision['combined_score']),
+                'risk_reward_ratio': float(risk_reward_ratio),
+                'atr': float(atr),
+
+                # Include key analysis components
+                'regime': structure_analysis.get('regime', 'undefined'),
+                'patterns': structure_analysis.get('patterns', []),
+                'order_flow': flow_analysis.get('direction', 'neutral'),
+                'liquidity': flow_analysis.get('liquidity', {}),
+
+                # Add performance metrics if available
+                'win_rate': self._get_historical_win_rate(symbol, timeframe, action)
+            }
+
+            return signal
+
+        except Exception as e:
+            self.logger.error(f"Error constructing signal: {str(e)}")
+            # Return basic signal with error
+            return {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'action': signal_decision.get('action', 'buy'),
+                'entry_price': float(entry_price),
+                'timestamp': current_time.isoformat(),
+                'score': float(signal_decision.get('combined_score', 0)),
+                'atr': float(atr),
+                'error': str(e)
+            }
+
+    def _get_historical_win_rate(self, symbol: str, timeframe: str, action: str) -> float:
+        """
+        Get historical win rate for similar signals.
+
+        Args:
+            symbol (str): Trading symbol
+            timeframe (str): Signal timeframe
+            action (str): Signal action (buy/sell)
+
+        Returns:
+            float: Historical win rate (0-1) or 0.5 if no history
+        """
+        try:
+            if symbol not in self.signal_performance:
+                return 0.5
+
+            perf = self.signal_performance[symbol]
+            total_trades = perf['win_count'] + perf['loss_count']
+
+            if total_trades == 0:
+                return 0.5
+
+            return perf['win_count'] / total_trades
+
+        except Exception as e:
+            self.logger.error(f"Error getting historical win rate: {str(e)}")
+            return 0.5
+
+    def update_signal_performance(self, signal: Dict[str, Any], profit_loss: float) -> None:
+        """
+        Update historical performance tracking for signals.
+
+        Args:
+            signal (Dict[str, Any]): The original signal
+            profit_loss (float): The profit/loss result
+        """
+        try:
+            if not signal or 'symbol' not in signal:
+                return
+
+            symbol = signal['symbol']
+
+            if symbol not in self.signal_performance:
+                self.signal_performance[symbol] = {
+                    'win_count': 0,
+                    'loss_count': 0,
+                    'total_profit': 0,
+                    'total_loss': 0
+                }
+
+            if profit_loss > 0:
+                self.signal_performance[symbol]['win_count'] += 1
+                self.signal_performance[symbol]['total_profit'] += profit_loss
+            else:
+                self.signal_performance[symbol]['loss_count'] += 1
+                self.signal_performance[symbol]['total_loss'] += profit_loss
+
+        except Exception as e:
+            self.logger.error(f"Error updating signal performance: {str(e)}")
+
+    def estimate_slippage(self, symbol: str, order_size: float = 1.0) -> float:
+        """
+        Estimate slippage based on order size and market conditions.
+
+        Args:
+            symbol (str): Symbol to estimate for
+            order_size (float): Order size in lots
+
+        Returns:
+            float: Estimated slippage in price points
+        """
+        try:
+            df = self.indicator_histories.get(symbol, {}).get('1h')
+            if df is None or df.empty:
+                return 0.001  # Default minimal slippage
+
+            atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0.001
+
+            # Get real-time market data
             rtd = self.real_time_data.get(symbol)
             if not rtd:
-                return False
+                return atr * 0.1  # Default to 10% of ATR if no real-time data
 
-            return rtd['cumulative_tick'] > tick_threshold
+            # Use order flow information from OrderFlow module
+            slippage_estimate = self.order_flow.estimate_slippage(symbol, order_size)
+
+            # If OrderFlow provides a valid estimate, use it
+            if slippage_estimate is not None and slippage_estimate > 0:
+                return slippage_estimate
+
+            # Fallback to basic calculation
+            avg_volume = df['volume'].iloc[-20:].mean() if 'volume' in df.columns else 100
+            impact_factor = min(1.0, order_size / (avg_volume * 0.1)) if avg_volume > 0 else 0.1
+
+            return atr * impact_factor
+
         except Exception as e:
-            self.logger.error(f"Error checking tick filter for {symbol}: {str(e)}")
-            return False
-
-    def _check_price_near_vwap(self, symbol: str) -> bool:
-        """
-        Check if price is near VWAP.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if price is near VWAP, False otherwise
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or 'close' not in df.columns or 'vwap' not in df.columns:
-                return False
-
-            close = df['close'].iloc[-1]
-            vwap = df['vwap'].iloc[-1]
-
-            if vwap == 0:
-                return False
-
-            return abs(close - vwap) / vwap < 0.005
-        except Exception as e:
-            self.logger.error(f"Error checking price near VWAP for {symbol}: {str(e)}")
-            return False
-
-    def _check_zscore_deviation(self, symbol: str) -> bool:
-        """
-        Check for significant Z-score deviation.
-
-        Args:
-            symbol (str): Symbol to check
-
-        Returns:
-            bool: True if significant deviation detected, False otherwise
-        """
-        try:
-            df = self.indicator_histories.get(symbol, {}).get('1h', pd.DataFrame())
-            if df.empty or 'zscore' not in df.columns:
-                return False
-
-            zscore = df['zscore'].iloc[-1]
-            return abs(zscore) > 2
-        except Exception as e:
-            self.logger.error(f"Error checking Z-score deviation for {symbol}: {str(e)}")
-            return False
+            self.logger.error(f"Error estimating slippage: {str(e)}")
+            return 0.001  # Default minimal slippage on error
